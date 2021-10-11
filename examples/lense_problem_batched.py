@@ -54,9 +54,6 @@ rhs = -omega**2*nu*u_i
 # which is then reshaped
 f = jnp.reshape(rhs, (-1,))
 
-# trigger the compilation 
-test = jax_ls.apply_lipp_schwin(params, nu_vect, f)
-
 # solve for the density u = G*sigma
 sigma = jax_ls.ls_solver(params, nu_vect, f)
 
@@ -68,22 +65,52 @@ plt.figure(figsize=(10,10))
 plt.subplot(2, 2, 1)
 plt.imshow(jnp.real(u_s.reshape(n,m)))
 plt.xticks([]); plt.yticks([]);
-plt.title('real part', color='black')
-plt.ylabel('scattered field')
+plt.title('real part', color='red')
 
 plt.subplot(2, 2, 2)
 plt.imshow(jnp.imag(u_s.reshape(n,m)))
 plt.xticks([]); plt.yticks([]);
-plt.title('imaginary part', color='black')
+plt.title('imaginary part', color='red')
 
 plt.subplot(2, 2, 3)
 plt.imshow(jnp.real(u_i + u_s.reshape(n,m)))
 plt.xticks([]); plt.yticks([]);
-plt.ylabel('total field')
-
 
 plt.subplot(2, 2, 4)
 plt.imshow(jnp.imag(u_i + u_s.reshape(n,m)))
 plt.xticks([]); plt.yticks([]);
 
+## now we try to batch and parallelize the solution, which is usefull 
+# when computing the farfield operator
+
+n_angles = 10
+d_theta = jnp.pi*2/(n_angles)
+theta = jnp.linspace(jnp.pi, 3*jnp.pi-d_theta, n_angles)
+S = jnp.concatenate([jnp.cos(theta).reshape((n_angles, 1)), 
+                     jnp.sin(theta).reshape((n_angles, 1))], axis = 1)
+
+U_i = jnp.exp(1j*omega*(params.X.reshape((-1, 1))*S[:,0].reshape((1, -1))\
+                       +params.Y.reshape((-1, 1))*S[:,1].reshape((1, -1))))
+
+Rhs = -omega**2*nu.reshape((-1,1))*U_i
+
+# now we want to solve this problem in a batched form 
+
+solver_fix = partial(jax_ls.ls_solver, params, nu_vect)
+
+solver_jit = jit(partial(jax_ls.ls_solver_batched, params, nu_vect))
+solver_fixed_batched = jit(vmap(solver_jit, 
+                                in_axes=1, 
+                                out_axes=1))
+green_batched = jit(vmap(partial(apply_green_function, params),
+                         in_axes=1,
+                         out_axes=1))
+
+
+Sigma = solver_fixed_batched(Rhs)
+
+U_s = green_batched(Sigma)
+
+# perhaps do a video here with all the different directions
+plt.imshow(jnp.real(U_s[:,1].reshape(n,m)))
 plt.show()
