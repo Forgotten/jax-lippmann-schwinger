@@ -8,8 +8,6 @@ from jax import random
 import jax
 import jax.numpy as jnp
 
-from jax import random
-key = random.PRNGKey(0)
 
 from typing import NamedTuple
 
@@ -32,18 +30,21 @@ def init_params(ax, ay, m, n, omega):
     hx = ax/(n-1)
     hy = ay/(n-1)
 
-    x = jnp.linspace(0.,a-hx, n) 
-    y = jnp.linspace(0.,a-hy, n)
+    x = jnp.linspace(0.,ax-hx, n) 
+    y = jnp.linspace(0.,ay-hy, n)
 
     [X, Y] = jnp.meshgrid(x,y)
 
-    Lp = 4*a ; 
-    L  = a*1.5;
+    # to do: this should be the largest 
+    max_length = jnp.max(jnp.array([ax, ay]))
+    Lp = 4*max_length 
+    L  = 1.5*max_length
 
     kx = jnp.linspace(-2*n, 2*n-1, 4*n);
     ky = jnp.linspace(-2*m, 2*m-1, 4*m);
 
-    # to check
+    # to check afterwards (in the case the domain is not 
+    # squared)
     # KX = (2*pi/Lp)*repmat(kx', 1, 4*m);
     # KY = (2*pi/Lp)*repmat(ky, 4*n,1); 
 
@@ -132,3 +133,10 @@ def ls_solver(params, nu_vect, f):
     u, info = jax.scipy.sparse.linalg.gmres(lambda x: apply_lipp_schwin(params,\
                                             nu_vect, x), f )
     return u
+
+@jit
+def ls_solver_batched(params, nu_vect, f):
+    u, info = jax.scipy.sparse.linalg.gmres(lambda x: apply_lipp_schwin(params,\
+                                            nu_vect, x), f , solve_method='batched')
+    return u
+
