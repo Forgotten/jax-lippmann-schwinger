@@ -26,7 +26,7 @@ n = 2**8
 m = n
 
 # we choose to have 4 points per wavelenght
-omega = n//4
+omega = 2*jnp.pi*(n//4)
 
 # initialize the parameters
 params = jax_ls.init_params(ax,ay, n, m, omega)
@@ -55,10 +55,14 @@ rhs = -omega**2*nu*u_i
 f = jnp.reshape(rhs, (-1,))
 
 # solve for the density u = G*sigma
+start = time.time()
 sigma = jax_ls.ls_solver(params, nu_vect, f)
 
 # computing the scattered field from the density
 u_s = jax_ls.apply_green_function(params, sigma)
+
+end = time.time()
+print("overall time elapse was %e[s]"%(end-start))
 
 
 plt.figure(figsize=(10,10))
@@ -96,21 +100,49 @@ Rhs = -omega**2*nu.reshape((-1,1))*U_i
 
 # now we want to solve this problem in a batched form 
 
-solver_fix = partial(jax_ls.ls_solver, params, nu_vect)
-
 solver_jit = jit(partial(jax_ls.ls_solver_batched, params, nu_vect))
-solver_fixed_batched = jit(vmap(solver_jit, 
+
+solver_batched = jit(vmap(solver_jit, 
                                 in_axes=1, 
                                 out_axes=1))
-green_batched = jit(vmap(partial(apply_green_function, params),
+green_batched = jit(vmap(partial(jax_ls.apply_green_function, params),
                          in_axes=1,
                          out_axes=1))
 
+# triger compilation with a small righ-hand side
+sigma_test = solver_batched(Rhs[:,0:1])
 
-Sigma = solver_fixed_batched(Rhs)
+# solve for all the rhs in a vectorized fashion
+Sigma = solver_batched(Rhs)
 
+# compue the scattered field
 U_s = green_batched(Sigma)
 
 # perhaps do a video here with all the different directions
 plt.imshow(jnp.real(U_s[:,1].reshape(n,m)))
 plt.show()
+
+
+# trying a much bigger problem
+start = time.time()
+n_angles = 100
+d_theta = jnp.pi*2/(n_angles)
+theta = jnp.linspace(jnp.pi, 3*jnp.pi-d_theta, n_angles)
+S = jnp.concatenate([jnp.cos(theta).reshape((n_angles, 1)), 
+                     jnp.sin(theta).reshape((n_angles, 1))], axis = 1)
+
+U_i = jnp.exp(1j*omega*(params.X.reshape((-1, 1))*S[:,0].reshape((1, -1))\
+                       +params.Y.reshape((-1, 1))*S[:,1].reshape((1, -1))))
+
+Rhs = -omega**2*nu.reshape((-1,1))*U_i
+
+# solve for all the rhs in a vectorized fashion
+Sigma = solver_batched(Rhs)
+
+# compue the scattered field
+U_s = green_batched(Sigma)
+
+end = time.time()
+
+print("overall time elapse was %d[s]"%(end-start))
+

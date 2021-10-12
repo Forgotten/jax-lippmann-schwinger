@@ -20,18 +20,30 @@ def fourier_green_function(L,k,s):
 # nu = nu_vect(:);
 
 class LippSchwinParams(NamedTuple):
+    # truncated Green's function in Fourier domain
     GFFT: jnp.ndarray
+    # frequency
     omega: jnp.float32
+    # grid in x
     X: jnp.ndarray
+    # grid in y 
     Y: jnp.ndarray
 
-def init_params(ax, ay, m, n, omega):
+
+def init_params(ax, ay, n, m, omega):
+    """ funciton to initialize the parameters
+    ax:    length of the domain in the x direction
+    ay:    length of the domian in the y direction
+    n:     number of discretization points in the x direction
+    m:     number of discretization points in the y direction
+    omega: frequency 
+    """
 
     hx = ax/(n-1)
-    hy = ay/(n-1)
+    hy = ay/(m-1)
 
-    x = jnp.linspace(0.,ax-hx, n) 
-    y = jnp.linspace(0.,ay-hy, n)
+    x = jnp.linspace(0.,ax-hx, n) - ax/2
+    y = jnp.linspace(0.,ay-hy, n) - ay/2
 
     [X, Y] = jnp.meshgrid(x,y)
 
@@ -62,11 +74,13 @@ def init_params(ax, ay, m, n, omega):
 
 @jit
 def apply_green_function(params: LippSchwinParams,\
-                                u: jnp.ndarray) -> jnp.ndarray:
+                         u: jnp.ndarray) -> jnp.ndarray:
 
+    # we extract the dimensions
     ne, me = params.GFFT.shape[0], params.GFFT.shape[1]
     n, m =  ne//4, me//4
 
+    # we create the intermediate vector
     BExt = jnp.zeros((ne, me), dtype=np.complex64)
     BExt = BExt.at[:n,:m].set(jnp.reshape(u, (n,m)))
 
@@ -80,12 +94,14 @@ def apply_green_function(params: LippSchwinParams,\
     # we extract the correct piece
     Gu = BExt[:n, :m]
 
+    # we return the reshaped vector
     return jnp.reshape(Gu, (-1,))
 
 
 # this version works!!!
 @jit
-def apply_green_function_raw(GFFT, u):
+def apply_green_function_raw(GFFT: jnp.ndarray, 
+                             u: jnp.ndarray) -> jnp.ndarray:
 
     n, m =  GFFT.shape[0]//4, GFFT.shape[1]//4
 
@@ -105,7 +121,9 @@ def apply_green_function_raw(GFFT, u):
     return jnp.reshape(Gu, (-1,))
 
 @jit
-def apply_lipp_schwin(params, nu_vect, u):
+def apply_lipp_schwin(params: LippSchwinParams, 
+                      nu_vect: jnp.ndarray,
+                      u: jnp.ndarray) -> jnp.ndarray:
 
     ne, me = params.GFFT.shape[0], params.GFFT.shape[1]
     n, m =  ne//4, me//4
@@ -129,13 +147,19 @@ def apply_lipp_schwin(params, nu_vect, u):
 
 # wrapper for gmres
 @jit
-def ls_solver(params, nu_vect, f):
+def ls_solver(params: LippSchwinParams, 
+              nu_vect: jnp.ndarray,
+              f: jnp.ndarray) -> jnp.ndarray:
+
     u, info = jax.scipy.sparse.linalg.gmres(lambda x: apply_lipp_schwin(params,\
                                             nu_vect, x), f )
     return u
 
 @jit
-def ls_solver_batched(params, nu_vect, f):
+def ls_solver_batched(params: LippSchwinParams, 
+                      nu_vect: jnp.ndarray,
+                      f: jnp.ndarray) -> jnp.ndarray:
+
     u, info = jax.scipy.sparse.linalg.gmres(lambda x: apply_lipp_schwin(params,\
                                             nu_vect, x), f , solve_method='batched')
     return u
