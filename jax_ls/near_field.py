@@ -29,12 +29,13 @@ class NearFielParams(NamedTuple):
     hy: jnp.float32
     
 
-def init_params_near_field(ax, ay, n, m, omega):
+def init_params_near_field(ax, ay, n, m, r, omega):
     """ funciton to initialize the parameters
     ax:    length of the domain in the x direction
     ay:    length of the domian in the y direction
     n:     number of discretization points in the x direction
     m:     number of discretization points in the y direction
+    r:		radious of the observation manifold
     omega: frequency 
     """
 
@@ -48,12 +49,8 @@ def init_params_near_field(ax, ay, n, m, omega):
 	d_theta = jnp.pi*2/(n_angles)
 	theta = jnp.linspace(jnp.pi, 3*jnp.pi-d_theta, n_angles)
 
-	# todo: extract this 
-
-	radious = 1.0 # to be extracted 
-
 	# defining the observation (and sampling) manifold
-	X_s = radious*jnp.concatenate([jnp.cos(theta).reshape((n_angles, 1)),\
+	X_s = r*jnp.concatenate([jnp.cos(theta).reshape((n_angles, 1)),\
 	                              jnp.sin(theta).reshape((n_angles, 1))],\
 	                              axis = 1)
 
