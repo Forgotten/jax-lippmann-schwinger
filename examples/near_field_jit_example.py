@@ -5,17 +5,14 @@ import scipy as sp
 import matplotlib.pyplot as plt
 from functools import partial
 
-from jax import grad, jit, vmap
-from jax import lax
-from jax import random
+from jax import jit
+
 import jax
 import jax.numpy as jnp
 import time 
 
 import jax_ls
 
-from jax import random
-key = random.PRNGKey(0)
 
 # size of the domain in x and y
 ax = 1.0
@@ -31,6 +28,9 @@ omega = 2*jnp.pi*(n//8)
 # grid spacing
 hx = 1/(n-1)
 
+sampling_radious = 1.0
+n_angles = n
+
 # initialize the parameters
 params_nf = jax_ls.init_params_near_field(ax, ay, n, m,\
                        sampling_radious, n_angles, omega)
@@ -41,8 +41,8 @@ def perturbation(x,y):
     return jnp.exp(-100*(jnp.square(x) + jnp.square(y)))
 
 # we sample the perturbation
-nu = perturbation(params_nf.params.X, 
-                  params_nf.params.Y)
+nu = perturbation(params_nf.ls_params.X, 
+                  params_nf.ls_params.Y)
 nu_vect = jnp.reshape(nu, (-1,))
  
 # starting the solution and the computation

@@ -33,7 +33,6 @@ class NearFieldParams(NamedTuple):
     hy: jnp.float32
 
     
-@jit
 def init_params_near_field(ax, ay, n, m, r, n_theta, omega):
     """ funciton to initialize the parameters
     ax:    length of the domain in the x direction
@@ -75,7 +74,8 @@ def near_field_map(params: NearFieldParams,
                    nu_vect: jnp.ndarray) -> jnp.ndarray:
     """function to comput the near field in a circle of radious 1"""
 
-    Rhs = -(params.ls_params.omega**2)*nu_vect.reshape((-1,1))*params.G_sample
+    Rhs = -(params.ls_params.omega**2)\
+           *nu_vect.reshape((-1,1))*params.G_sample
 
     # defining the batched transformations
     solver_batched = jit(vmap(jit(partial(ls_solver_batched,
