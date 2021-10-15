@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 from jax import grad, jit
 from jax import lax
 from jax import random
+
 import jax
 import jax.numpy as jnp
 

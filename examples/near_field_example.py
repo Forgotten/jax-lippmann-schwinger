@@ -12,7 +12,7 @@ import jax
 import jax.numpy as jnp
 import time 
 
-import jax_ls.jax_ls as jax_ls
+import jax_ls
 
 from jax import random
 key = random.PRNGKey(0)
@@ -26,7 +26,7 @@ n = 2**7
 m = n
 
 # we choose to have 4 points per wavelenght
-omega = 2*jnp.pi*(n//4)
+omega = 2*jnp.pi*(n//8)
 
 # grid spacing
 hx = 1/(n-1)
@@ -45,7 +45,7 @@ def green_function(r, omega):
 
 # we sample the perturbation
 nu = perturbation(params.X, params.Y)
-nu_vect  = jnp.reshape(nu, (-1,))
+nu_vect = jnp.reshape(nu, (-1,))
 
 # defining the batched transformations
 solver_batched = jit(vmap(jit(partial(jax_ls.ls_solver_batched, 
@@ -58,18 +58,18 @@ green_batched = jit(vmap(partial(jax_ls.apply_green_function,
                          in_axes=1,
                          out_axes=1))
 
-
 # we seek to sample the wavefield on the observation manifold
 start = time.time()
 n_angles = n
 d_theta = jnp.pi*2/(n_angles)
 theta = jnp.linspace(jnp.pi, 3*jnp.pi-d_theta, n_angles)
+
 radious = 1.0
 
 # defining the observation (and sampling) manifold
 X_s = radious*jnp.concatenate([jnp.cos(theta).reshape((n_angles, 1)),\
-                              jnp.sin(theta).reshape((n_angles, 1))],\
-                              axis = 1)
+                               jnp.sin(theta).reshape((n_angles, 1))],\
+                               axis = 1)
 
 # computing the distances to each evaluation poitn
 R = jnp.sqrt(  jnp.square(params.X.reshape((-1, 1))
@@ -90,4 +90,35 @@ U_s = green_batched(Sigma)
 end = time.time()
 print("overall time elapse was %d[s]"%(end-start))
 
-near_field = jnp.sum(Sigma*U_i, axis=0)*hx
+near_field = jnp.sum(Sigma.T.reshape((n_angles,-1,1))*U_i.reshape(1,-1,n_angles), axis=1)*hx*hx
+
+
+plt.figure(figsize=(10,5))
+plt.subplot(1, 2, 1)
+plt.imshow(jnp.real(near_field))
+plt.xticks([]); plt.yticks([]);
+plt.title('real part', color='black')
+
+plt.subplot(1, 2, 2)
+plt.imshow(jnp.imag(near_field))
+plt.xticks([]); plt.yticks([]);
+plt.title('imaginary part', color='black')
+
+plt.show()
+
+## using the 
+sampling_radious = 1.0
+n_angles = n
+
+
+params_nf = jax_ls.init_params_near_field(ax, ay, n, m,\
+                       sampling_radious, n_angles, omega)
+
+start = time.time()
+
+near_field_2 = jax_ls.near_field_map(params_nf, nu_vect)
+
+end = time.time()
+print("overall time elapse was %e[s]"%(end-start))
+
+

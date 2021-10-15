@@ -12,7 +12,7 @@ import jax
 import jax.numpy as jnp
 import time 
 
-import jax_ls.jax_ls as jax_ls
+import jax_ls
 
 from jax import random
 key = random.PRNGKey(0)
@@ -27,8 +27,8 @@ m = n
 
 hx = 1/(n-1)
 
-# we choose to have 4 points per wavelenght
-omega = 2*jnp.pi*(n//4)
+# we choose to have 6 points per wavelenght
+omega = 2*jnp.pi*(n//6)
 
 # initialize the parameters
 params = jax_ls.init_params(ax,ay, n, m, omega)
@@ -36,7 +36,7 @@ params = jax_ls.init_params(ax,ay, n, m, omega)
 # definition of the perturbation by the lense
 @jit
 def perturbation(x,y):
-    return jnp.exp(-100*(jnp.square(x-0.5) + jnp.square(y - 0.5)))
+    return jnp.exp(-100*(jnp.square(x) + jnp.square(y)))
 
 def green_function(r, omega):
     return (-1j/4)*sp.special.hankel1(0,omega*r)
@@ -107,8 +107,8 @@ R = jnp.sqrt(  jnp.square(params.X.reshape((-1, 1))-X_s[:,0].reshape((1, -1)))\
 
 U_i = green_function(R, omega)
 
+# trapezoidal rule 
+u_s_bdy = jnp.sum(U_i*sigma.reshape((-1,1)), axis = 0)*(hx**2) 
 
-u_s_bdy = jnp.sum(U_i*sigma.reshape((-1,1)), axis = 0)*hx
-
-plt.plot(knp.real(u_s_bdy))
+plt.plot(jnp.real(u_s_bdy))
 plt.show()

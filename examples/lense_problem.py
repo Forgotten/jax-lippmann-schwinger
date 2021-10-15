@@ -12,7 +12,7 @@ import jax
 import jax.numpy as jnp
 import time 
 
-import jax_ls.jax_ls as jax_ls
+import jax_ls
 
 from jax import random
 key = random.PRNGKey(0)
@@ -26,7 +26,7 @@ n = 2**8
 m = n
 
 # we choose to have 4 points per wavelenght
-omega = n//4
+omega = 2*jnp.pi*(n//6)
 
 # initialize the parameters
 params = jax_ls.init_params(ax,ay, n, m, omega)
@@ -34,7 +34,7 @@ params = jax_ls.init_params(ax,ay, n, m, omega)
 # definition of the perturbation by the lense
 @jit
 def perturbation(x,y):
-    return jnp.exp(-100*(jnp.square(x-0.5) + jnp.square(y - 0.5)))
+    return jnp.exp(-100*(jnp.square(x) + jnp.square(y)))
 
 # we sample the perturbation
 nu = perturbation(params.X, params.Y)
