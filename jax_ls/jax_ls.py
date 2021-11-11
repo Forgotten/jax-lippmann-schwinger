@@ -1,10 +1,13 @@
 import numpy as np
 import scipy as sp
 import matplotlib.pyplot as plt
+from functools import partial
 
 from jax import grad, jit
 from jax import lax
 from jax import random
+from jax import custom_jvp
+
 
 import jax
 import jax.numpy as jnp
@@ -152,16 +155,63 @@ def ls_solver(params: LippSchwinParams,
               nu_vect: jnp.ndarray,
               f: jnp.ndarray) -> jnp.ndarray:
 
-    u, info = jax.scipy.sparse.linalg.gmres(lambda x: apply_lipp_schwin(params,\
+    sigma, info = jax.scipy.sparse.linalg.gmres(lambda x: apply_lipp_schwin(params,\
                                             nu_vect, x), f )
-    return u
+    return sigma
 
 @jit
 def ls_solver_batched(params: LippSchwinParams, 
                       nu_vect: jnp.ndarray,
                       f: jnp.ndarray) -> jnp.ndarray:
-
-    u, info = jax.scipy.sparse.linalg.gmres(lambda x: apply_lipp_schwin(params,\
+    """ 
+    Function to solve the density for the Lippmann-Schwinger equation 
+    """
+    sigma, info = jax.scipy.sparse.linalg.gmres(lambda x: apply_lipp_schwin(params,\
                                             nu_vect, x), f , solve_method='batched')
+    return sigma
+
+
+# we compute the Born approximation to compute u directly instead of sigma
+@partial(custom_jvp, nondiff_argnums=(0,2))
+def ls_solver_u(params: LippSchwinParams, 
+                nu_vect: jnp.ndarray,
+                f: jnp.ndarray) -> jnp.ndarray:
+    # this is basically the same function as above, the difference is that we compute
+    # u directly
+
+    sigma, info = jax.scipy.sparse.linalg.gmres(lambda x: apply_lipp_schwin(params,\
+                                            nu_vect, x), f )
+    
+    # we compute u in this case from sigma
+    u = apply_green_function(params, sigma)
+
     return u
+
+@ls_solver_u.defjvp
+def ls_solver_u_jvp(params, f, primals, tangents):
+    """ Function to compute the Born approximation 
+    Lap ( u + delta u) + omega^2 (nu + delta nu) ( u + delta u) = f
+    
+    we first compute the zero-th order 
+    Lap u + omega^2 nu u = f
+    which is then used to compute the first variation
+    Lap delta u + omega^2 nu (delta u) = -omega^2 (delta nu) u
+    
+    """
+
+    nu_vect, = primals
+    delta_nu_vect, = tangents
+
+    # solve the zero-th order with the reference nu
+    u = ls_solver_u(params, nu_vect, f)
+
+    # compute the rhs for the Born approximation
+    rhs = -params.omega**2*u*delta_nu_vect
+
+    delta_sigma, info = jax.scipy.sparse.linalg.gmres(lambda x: apply_lipp_schwin(params,\
+                                                    nu_vect, x), rhs)
+    delta_u = apply_green_function(params, delta_sigma)
+
+    return u, delta_u
+
 
