@@ -101,29 +101,6 @@ def apply_green_function(params: LippSchwinParams,\
     # we return the reshaped vector
     return jnp.reshape(Gu, (-1,))
 
-
-# this version works!!!
-@jit
-def apply_green_function_raw(GFFT: jnp.ndarray, 
-                             u: jnp.ndarray) -> jnp.ndarray:
-
-    n, m =  GFFT.shape[0]//4, GFFT.shape[1]//4
-
-    BExt = jnp.zeros(GFFT.shape, dtype=np.complex64)
-    BExt = BExt.at[:n,:m].set(jnp.reshape(u,(n,m)))
-
-    # Fourier Transform
-    BFft = jnp.fft.fft2(BExt);
-    # Component-wise multiplication
-    BFft = GFFT*BFft;
-    # Inverse Fourier Transform
-    BExt = jnp.fft.ifft2(BFft);
-
-    # we extract the correct piece
-    Gu = BExt[:n, :m]
-
-    return jnp.reshape(Gu, (-1,))
-
 @jit
 def apply_lipp_schwin(params: LippSchwinParams, 
                       nu_vect: jnp.ndarray,
@@ -149,6 +126,58 @@ def apply_lipp_schwin(params: LippSchwinParams,
     return -u + jnp.square(params.omega)*nu_vect*Gu
 
 
+@jit
+def apply_conj_green_function(params: LippSchwinParams,\
+                         u: jnp.ndarray) -> jnp.ndarray:
+    # function to apply the conjugate of the Green's function
+    # this is usefull when computing the adjoint
+
+    # we extract the dimensions
+    ne, me = params.GFFT.shape[0], params.GFFT.shape[1]
+    n, m =  ne//4, me//4
+
+    # we create the intermediate vector
+    BExt = jnp.zeros((ne, me), dtype=np.complex64)
+    BExt = BExt.at[:n,:m].set(jnp.reshape(u, (n,m)))
+
+    # Fourier Transform
+    BFft = jnp.fft.fft2(BExt);
+    # Component-wise multiplication
+    BFft = jnp.conj(params.GFFT)*BFft;
+    # Inverse Fourier Transform
+    BExt = jnp.fft.ifft2(BFft);
+
+    # we extract the correct piece
+    Gu = BExt[:n, :m]
+
+    # we return the reshaped vector
+    return jnp.reshape(Gu, (-1,))
+
+@jit
+def apply_lipp_schwin_adj(params: LippSchwinParams, 
+                      nu_vect: jnp.ndarray,
+                      u: jnp.ndarray) -> jnp.ndarray:
+    # function to apply the conjugate of the Green's function
+    
+    ne, me = params.GFFT.shape[0], params.GFFT.shape[1]
+    n, m =  ne//4, me//4
+
+    BExt = jnp.zeros((ne, me), dtype=np.complex64)
+    BExt = BExt.at[:n,:m].set(jnp.reshape(u, (n,m)))
+
+    # Fourier Transform
+    BFft = jnp.fft.fft2(BExt);
+    # Component-wise multiplication
+    BFft = jnp.conj(params.GFFT)*BFft;
+    # Inverse Fourier Transform
+    BExt = jnp.fft.ifft2(BFft);
+
+    # we extract the correct piece
+    Gu = BExt[:n, :m].reshape((-1,))
+
+    # we return the (-I + omega^2 nu G)u 
+    return -u + jnp.square(params.omega)*nu_vect*Gu
+
 # wrapper for gmres
 @jit
 def ls_solver(params: LippSchwinParams, 
@@ -170,6 +199,18 @@ def ls_solver_batched(params: LippSchwinParams,
                                             nu_vect, x), f , solve_method='batched')
     return sigma
 
+# TODO there should be an easier way to write this very similar functions
+@jit
+def ls_solver_batched_adj(params: LippSchwinParams, 
+                      nu_vect: jnp.ndarray,
+                      f: jnp.ndarray) -> jnp.ndarray:
+    """ 
+    Function to solve the density for adjoint Lippmann-Schwinger equation 
+    """
+    sigma, info = jax.scipy.sparse.linalg.gmres(lambda x: apply_lipp_schwin_adj(params,\
+                                            nu_vect, x), f , solve_method='batched')
+    return sigma
+
 
 # we compute the Born approximation to compute u directly instead of sigma
 @partial(custom_jvp, nondiff_argnums=(0,2))
@@ -179,8 +220,8 @@ def ls_solver_u(params: LippSchwinParams,
     # this is basically the same function as above, the difference is that we compute
     # u directly
 
-    sigma, info = jax.scipy.sparse.linalg.gmres(lambda x: apply_lipp_schwin(params,\
-                                            nu_vect, x), f )
+    # we solve for sigma first (this function is already jitted)
+    sigma = ls_solver(params, nu_vect, f)
     
     # we compute u in this case from sigma
     u = apply_green_function(params, sigma)
@@ -195,7 +236,7 @@ def ls_solver_u_jvp(params, f, primals, tangents):
     we first compute the zero-th order 
     Lap u + omega^2 nu u = f
     which is then used to compute the first variation
-    Lap delta u + omega^2 nu (delta u) = -omega^2 (delta nu) u
+    Lap delta_u + omega^2 nu (delta_u) = -omega^2 (delta_nu) u
     
     """
 
@@ -208,10 +249,77 @@ def ls_solver_u_jvp(params, f, primals, tangents):
     # compute the rhs for the Born approximation
     rhs = -params.omega**2*u*delta_nu_vect
 
-    delta_sigma, info = jax.scipy.sparse.linalg.gmres(lambda x: apply_lipp_schwin(params,\
-                                                    nu_vect, x), rhs)
-    delta_u = apply_green_function(params, delta_sigma)
+    # solve the equation of the first variation 
+    # Lap delta_u + omega^2 nu (delta_u) = -omega^2 (delta_nu) u
+    delta_u = ls_solver_u(params, nu_vect, rhs)
 
     return u, delta_u
 
 
+# Born approximation only for sigma
+@partial(custom_jvp, nondiff_argnums=(0,2))
+def ls_solver_batched_sigma(params: LippSchwinParams, 
+                            nu_vect: jnp.ndarray,
+                            f: jnp.ndarray) -> jnp.ndarray:
+    """ 
+    Function to solve the density for the Lippmann-Schwinger equation 
+    """
+    sigma, info = jax.scipy.sparse.linalg.gmres(lambda x: apply_lipp_schwin(params,\
+                                            nu_vect, x), f , solve_method='batched')
+    return sigma
+
+
+@ls_solver_batched_sigma.defjvp
+def ls_solver_batched_sigma_jvp(params, f, primals, tangents):
+    """ Function to compute the Born approximation 
+    Lap ( u + delta u) + omega^2 (nu + delta nu) ( u + delta u) = f
+    
+    we first compute the zero-th order 
+    Lap u + omega^2 nu u = f
+    which is then used to compute the first variation
+    Lap delta u + omega^2 nu (delta u) = -omega^2 (delta nu) u
+    """
+
+    nu_vect, = primals
+    delta_nu_vect, = tangents
+
+
+    # solve the zero-th order with the reference nu
+    sigma, info = jax.scipy.sparse.linalg.gmres(lambda x: apply_lipp_schwin(params,\
+                                            nu_vect, x), f , solve_method='batched')
+
+    u = apply_green_function(params, sigma)
+
+    # compute the rhs for the Born approximation
+    rhs = -params.omega**2*u*delta_nu_vect
+
+    delta_sigma, info = jax.scipy.sparse.linalg.gmres(lambda x: apply_lipp_schwin(params,\
+                                                    nu_vect, x), rhs)
+
+    return sigma, delta_sigma
+
+
+#####################################################################
+# here we implement a few test functions
+
+# this version works!!!
+@jit
+def apply_green_function_raw(GFFT: jnp.ndarray, 
+                             u: jnp.ndarray) -> jnp.ndarray:
+
+    n, m =  GFFT.shape[0]//4, GFFT.shape[1]//4
+
+    BExt = jnp.zeros(GFFT.shape, dtype=np.complex64)
+    BExt = BExt.at[:n,:m].set(jnp.reshape(u,(n,m)))
+
+    # Fourier Transform
+    BFft = jnp.fft.fft2(BExt);
+    # Component-wise multiplication
+    BFft = GFFT*BFft;
+    # Inverse Fourier Transform
+    BExt = jnp.fft.ifft2(BFft);
+
+    # we extract the correct piece
+    Gu = BExt[:n, :m]
+
+    return jnp.reshape(Gu, (-1,))

@@ -91,6 +91,39 @@ def near_field_map(params: NearFieldParams,
 
     near_field = jnp.sum( Sigma.T.reshape((n_angles, nm, 1))\
                          *params.G_sample.reshape((1, nm, n_angles)),
-                         axis=0)*params.hx*params.hy
+                         axis=1)*params.hx*params.hy
 
     return near_field
+
+
+
+
+@jit
+def near_field_map_v2(params: NearFieldParams, 
+                      nu_vect: jnp.ndarray) -> jnp.ndarray:
+    """function to comput the near field in a circle of radious 1, 
+    in this case we use the ls_solver_batched_sigma, which already has 
+    a custom jvp implemented """
+
+    Rhs = -(params.ls_params.omega**2)\
+           *nu_vect.reshape((-1,1))*params.G_sample
+
+    # defining the batched transformations
+    solver_batched = jit(vmap(jit(partial(ls_solver_batched_sigma,
+                                          params.ls_params,
+                                          nu_vect)),
+                              in_axes=1, 
+                              out_axes=1))
+
+    # solve for all the rhs in a vectorized fashion
+    Sigma = solver_batched(Rhs)
+
+    nm, n_angles = params.G_sample.shape
+
+    near_field = jnp.sum( Sigma.T.reshape((n_angles, nm, 1))\
+                         *params.G_sample.reshape((1, nm, n_angles)),
+                         axis=1)*params.hx*params.hy
+
+    return near_field
+
+
