@@ -35,7 +35,10 @@ from .jax_ls import ls_solver_batched_adj
 
 
 def green_function(r, omega):
-    return (-1j/4)*sp.special.hankel1(0,omega*r)
+    # this is green's function defined by as the fundamental solution
+    # note the sign, i.e., it satisfies,
+    # Delta G(x,y) + omega^2 G(x,y) = - delta (x,y)
+    return (1j/4)*sp.special.hankel1(0,omega*r)
 
 class NearFieldParams(NamedTuple):
     # truncated Green's function in Fourier domain
@@ -78,7 +81,9 @@ def init_params_near_field(ax, ay, n, m, r, n_theta, omega):
                  + jnp.square(params.Y.reshape((-1, 1))
                               - X_s[:,1].reshape((1, -1))))
 
-    U_i = green_function(R, omega)
+    # here we are defining the Green's function using the correct sign
+    # it, it satisfies Delta G(x,y) + omega^2 G(x,y) = delta (x,y)
+    U_i = -green_function(R, omega)
 
     return NearFieldParams(params, U_i, hx, hy)
 
@@ -299,14 +304,19 @@ def near_field_map_vect_v2_bwd(params, fwd_res, res):
 
     nm, n_angles = params.G_sample.shape
 
+    # incident field in the adjoint problem 
+    U_adj_i = (params.ls_params.omega**2)*(jnp.conj(params.G_sample)\
+              @res.reshape((n_angles,n_angles)))
+
     # assembling the adjoint RHS for the integral equation
-    Rhs_adjoint = (params.ls_params.omega**2)*jnp.conj(params.G_sample)@res.reshape((n_angles,n_angles))
+    Rhs_adjoint = -(params.ls_params.omega**2)*U_adj_i*nu_vect.reshape((-1,1))
 
     # solve for all the rhs in a vectorized fashion
     Sigma_adj = solver_adj_batched(Rhs_adjoint)
 
     # computing the scattered field
-    U_adj = conj_green_batched(Sigma_adj)
+    U_adj = conj_green_batched(Sigma_adj) + U_adj_i
+
 
     return (jnp.sum(jnp.conj(U_total)*U_adj, axis = 1),)
 
@@ -411,16 +421,19 @@ def near_field_l2_loss_bwd(params, u_data, fwd_res, cotangent):
     # extracting sizes to evaluate the integrals  
     nm, n_angles = params.G_sample.shape
 
+    # incident field in the adjoint problem 
+    U_adj_i = (params.ls_params.omega**2)*(jnp.conj(params.G_sample)@res)
+
     # assembling the adjoint RHS for the integral equation
-    Rhs_adjoint = (params.ls_params.omega**2)*jnp.conj(params.G_sample)@res
+    Rhs_adjoint = -(params.ls_params.omega**2)*U_adj_i*nu_vect.reshape((-1,1))
 
     # solve for all the rhs in a vectorized fashion
     Sigma_adj = solver_adj_batched(Rhs_adjoint)
 
     # computing the scattered field
-    U_adj = conj_green_batched(Sigma_adj)
+    U_adj = conj_green_batched(Sigma_adj) + U_adj_i
 
-    return (-cotangent*jnp.sum(jnp.real(U_adj*jnp.conj(U_total)), axis = 1),)
+    return (cotangent*jnp.sum(jnp.real(U_adj*jnp.conj(U_total)), axis = 1),)
 
 
 near_field_l2_loss.defvjp(near_field_l2_loss_fwd, near_field_l2_loss_bwd)
@@ -482,12 +495,14 @@ def near_field_l2_loss_grad(params, u_data, nu_vect):
                          *params.G_sample.reshape((1, nm, n_angles)),
                          axis=1)*params.hx*params.hy
 
-
     # computing the residual
     res = near_field - u_data 
 
+    # incident field for the adjoint problem
+    U_adj_i = (params.ls_params.omega**2)*(jnp.conj(params.G_sample)@res)
+
     # assembling the adjoint RHS for the integral equation
-    Rhs_adjoint = (params.ls_params.omega**2)*jnp.conj(params.G_sample)@res
+    Rhs_adjoint = -(params.ls_params.omega**2)*U_adj_i*nu_vect.reshape((-1,1))
 
     # solve for all the rhs in a vectorized fashion
     Sigma_adj = solver_adj_batched(Rhs_adjoint)
@@ -495,4 +510,6 @@ def near_field_l2_loss_grad(params, u_data, nu_vect):
     # computing the scattered field
     U_adj = conj_green_batched(Sigma_adj)
 
-    return 0.5*jnp.sum(jnp.real((near_field - u_data) * jnp.conj(near_field - u_data))), -jnp.sum(jnp.real(U_adj*jnp.conj(U_total)), axis = 1)
+    U_adj_total = U_adj + U_adj_i
+
+    return 0.5*jnp.sum(jnp.real((near_field - u_data) * jnp.conj(near_field - u_data))), jnp.sum(jnp.real(U_adj_total*jnp.conj(U_total)), axis = 1)
