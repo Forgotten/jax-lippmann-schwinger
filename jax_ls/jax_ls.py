@@ -155,8 +155,8 @@ def apply_conj_green_function(params: LippSchwinParams,\
 
 @jit
 def apply_lipp_schwin_adj(params: LippSchwinParams, 
-                      nu_vect: jnp.ndarray,
-                      u: jnp.ndarray) -> jnp.ndarray:
+                          nu_vect: jnp.ndarray,
+                          u: jnp.ndarray) -> jnp.ndarray:
     # function to apply the conjugate of the Green's function
     
     ne, me = params.GFFT.shape[0], params.GFFT.shape[1]

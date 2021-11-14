@@ -136,7 +136,6 @@ plt.subplot(2, 2, 4)
 plt.imshow(jnp.imag(u_born.reshape(n,m)))
 plt.xticks([]); plt.yticks([]);
 
-plt.show()
 
 plt.figure(figsize=(10,10))
 plt.subplot(2, 2, 1)
@@ -159,4 +158,5 @@ plt.subplot(2, 2, 4)
 plt.imshow(jnp.imag(near_field_born.reshape(n,m)))
 plt.xticks([]); plt.yticks([]);
 
+plt.show()
 
