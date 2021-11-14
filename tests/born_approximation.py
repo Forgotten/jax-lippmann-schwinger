@@ -24,11 +24,15 @@ ax = 1.0
 ay = 1.0
 
 # number of discretization points per dimension
-n = 2**8
+n = 2**7
 m = n
 
 # we choose to have 6 points per wavelenght
 omega = 2*jnp.pi*(n//6)
+
+# parameters for the near field
+sampling_radious = 1.0
+n_angles = n
 
 # initialize the parameters
 params = jax_ls.init_params(ax,ay, n, m, omega)
@@ -83,7 +87,33 @@ u_0, u_born = jvp(solver_u, (nu_vect,), (delta_nu_vect,))
 # computing the error
 err = jnp.linalg.norm(fd_approx - u_born)/jnp.linalg.norm(u_born)
 
+# printing the error
 print("Error in the approximation of the born approximation is %e"%err)
+
+
+## Now checking the linearization from from the near-field map
+
+# initialize the parameters
+params_nf = jax_ls.init_params_near_field(ax, ay, n, m,\
+                       sampling_radious, n_angles, omega)
+
+# jitting the near field
+near_field = jit(partial(jax_ls.near_field_map_vect, params_nf))
+
+# compute the linearized version
+y, J = jax.linearize(near_field, nu_vect)
+
+near_field_born = J(delta_nu_vect)
+
+delta_t = 0.1
+near_fiel_p_1 = near_field(nu_vect + delta_t*delta_nu_vect)
+near_fiel_m_1 = near_field(nu_vect - delta_t*delta_nu_vect)
+
+near_field_fd_approx = (near_fiel_p_1-near_fiel_m_1)/(2*delta_t)
+
+err = jnp.linalg.norm(near_field_born - near_field_fd_approx)/jnp.linalg.norm(near_field_born)
+
+print("Error in the approximation of the born approximation in the near field  is %e"%err)
 
 plt.figure(figsize=(10,10))
 plt.subplot(2, 2, 1)
@@ -107,3 +137,26 @@ plt.imshow(jnp.imag(u_born.reshape(n,m)))
 plt.xticks([]); plt.yticks([]);
 
 plt.show()
+
+plt.figure(figsize=(10,10))
+plt.subplot(2, 2, 1)
+plt.imshow(jnp.real(near_field_fd_approx.reshape(n,m)))
+plt.xticks([]); plt.yticks([]);
+plt.title('real part', color='black')
+plt.ylabel('FD approximation field')
+
+plt.subplot(2, 2, 2)
+plt.imshow(jnp.imag(near_field_fd_approx.reshape(n,m)))
+plt.xticks([]); plt.yticks([]);
+plt.title('imaginary part', color='black')
+
+plt.subplot(2, 2, 3)
+plt.imshow(jnp.real(near_field_born.reshape(n,m)))
+plt.xticks([]); plt.yticks([]);
+plt.ylabel('first variation of the Field')
+
+plt.subplot(2, 2, 4)
+plt.imshow(jnp.imag(near_field_born.reshape(n,m)))
+plt.xticks([]); plt.yticks([]);
+
+

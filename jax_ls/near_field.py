@@ -5,6 +5,10 @@ from functools import partial
 
 from jax import grad, jit, vmap
 from jax import lax
+from jax import custom_jvp
+from jax import custom_vjp
+
+
 from jax import random
 import jax
 import jax.numpy as jnp
@@ -15,9 +19,19 @@ from typing import NamedTuple
 
 from .jax_ls import init_params
 from .jax_ls import LippSchwinParams
+
+# importing the application of the Green's functions
+# and the operators
 from .jax_ls import apply_green_function
+from .jax_ls import apply_conj_green_function
 from .jax_ls import apply_lipp_schwin
+from .jax_ls import apply_lipp_schwin_adj
+
+# importing the different solvers
 from .jax_ls import ls_solver_batched
+from .jax_ls import ls_solver_batched_sigma
+from .jax_ls import ls_solver_batched_adj
+
 
 
 def green_function(r, omega):
@@ -96,10 +110,8 @@ def near_field_map(params: NearFieldParams,
     return near_field
 
 
-
-
-@jit
-def near_field_map_v2(params: NearFieldParams, 
+@partial(custom_jvp, nondiff_argnums=(0,))
+def near_field_map_vect(params: NearFieldParams, 
                       nu_vect: jnp.ndarray) -> jnp.ndarray:
     """function to comput the near field in a circle of radious 1, 
     in this case we use the ls_solver_batched_sigma, which already has 
@@ -124,6 +136,66 @@ def near_field_map_v2(params: NearFieldParams,
                          *params.G_sample.reshape((1, nm, n_angles)),
                          axis=1)*params.hx*params.hy
 
-    return near_field
+    return near_field.reshape((-1,))
+
+
+@near_field_map_vect.defjvp
+def near_field_map_vect_jvp(params, primals, tangents):
+    """ Function to compute the Born approximation 
+    Lap ( u + delta u) + omega^2 (nu + delta nu) ( u + delta u) = f
+    
+    we first compute the zero-th order 
+    Lap u + omega^2 nu u = f
+    which is then used to compute the first variation
+    Lap delta u + omega^2 nu (delta u) = -omega^2 (delta nu) u
+
+    We can use this to solve the inverse problem using GMRES, i.e., 
+    solving the linearized system.
+    """
+
+    nu_vect, = primals
+    delta_nu_vect, = tangents
+
+    Rhs = -(params.ls_params.omega**2)\
+           *nu_vect.reshape((-1,1))*params.G_sample
+
+    # defining the batched transformations
+    solver_batched = jit(vmap(jit(partial(ls_solver_batched,
+                                          params.ls_params,
+                                          nu_vect)),
+                              in_axes=1, 
+                              out_axes=1))
+
+    green_batched = jit(vmap(jit(partial(apply_green_function,
+                                         params.ls_params)),
+                             in_axes=1,
+                             out_axes=1))
+
+
+    # solve for all the rhs in a vectorized fashion
+    Sigma = solver_batched(Rhs)
+
+    U_total = green_batched(Sigma) + params.G_sample
+
+    # compute the rhs for the Born approximation
+    Rhs_pert = -(params.ls_params.omega**2)\
+                *delta_nu_vect.reshape((-1,1))*U_total
+
+    # solving for the first variation of the density 
+    delta_Sigma = solver_batched(Rhs_pert)
+
+    # extracting sizes to evaluate the integrals  
+    nm, n_angles = params.G_sample.shape
+
+    near_field = jnp.sum( Sigma.T.reshape((n_angles, nm, 1))\
+                         *params.G_sample.reshape((1, nm, n_angles)),
+                         axis=1)*params.hx*params.hy
+
+    delta_near_field = jnp.sum( delta_Sigma.T.reshape((n_angles, nm, 1))\
+                         *params.G_sample.reshape((1, nm, n_angles)),
+                         axis=1)*params.hx*params.hy
+
+
+    return near_field.reshape((-1,)), delta_near_field.reshape((-1,))
 
 
