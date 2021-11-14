@@ -27,7 +27,7 @@ ay = 1.0
 n = 2**8
 m = n
 
-# we choose to have 4 points per wavelenght
+# we choose to have 6 points per wavelenght
 omega = 2*jnp.pi*(n//6)
 
 # initialize the parameters
@@ -65,29 +65,25 @@ rhs = -omega**2*nu*u_i
 # which is then reshaped
 f = jnp.reshape(rhs, (-1,))
 
-# trigger the compilation 
-test = jax_ls.apply_lipp_schwin(params, nu_vect, f)
-
-# solve for the density u = G*sigma
-sigma = jax_ls.ls_solver(params, nu_vect + delta_nu_vect, f)
-
-# computing the scattered field from the density
-u_s = jax_ls.apply_green_function(params, sigma)
-
 # let's encapsulate this a bit
 @jit
 def solver_u(nu): 
 	return jax_ls.ls_solver_u(params, nu, f)
 
 # Finite difference approximation of the derivatives
-delta_t = 0.1
+delta_t = 0.01
 u_p_1 = solver_u(nu_vect + delta_t*delta_nu_vect)
 u_m_1 = solver_u(nu_vect - delta_t*delta_nu_vect)
 
 fd_approx = (u_p_1-u_m_1)/(2*delta_t)
 
+# using the Jacobian-vector product
 u_0, u_born = jvp(solver_u, (nu_vect,), (delta_nu_vect,))
 
+# computing the error
+err = jnp.linalg.norm(fd_approx - u_born)/jnp.linalg.norm(u_born)
+
+print("Error in the approximation of the born approximation is %e"%err)
 
 plt.figure(figsize=(10,10))
 plt.subplot(2, 2, 1)
@@ -101,12 +97,12 @@ plt.imshow(jnp.imag(fd_approx.reshape(n,m)))
 plt.xticks([]); plt.yticks([]);
 plt.title('imaginary part', color='black')
 
-plt.subplot(2, 2, 3
+plt.subplot(2, 2, 3)
 plt.imshow(jnp.real(u_born.reshape(n,m)))
 plt.xticks([]); plt.yticks([]);
 plt.ylabel('first variation of the Field')
 
-plt.subplot(2, 2, 4
+plt.subplot(2, 2, 4)
 plt.imshow(jnp.imag(u_born.reshape(n,m)))
 plt.xticks([]); plt.yticks([]);
 
