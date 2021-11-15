@@ -45,11 +45,11 @@ params_nf = jax_ls.init_params_near_field(ax, ay, n, m,\
 # definition of the perturbation by the lense
 @jit
 def perturbation(x,y):
-    return 1.0*jnp.exp(-100*(jnp.square(x) + jnp.square(y)))
+    return 1.0*jnp.exp(-100*(jnp.square(x+0.1) + jnp.square(y+0.1)))
 
 @jit
 def delta_perturbation(x,y):
-    return 0.001*jnp.exp(-1000*(jnp.square(x-0.1) + jnp.square(y-0.1)))
+    return 0.1*jnp.exp(-1000*(jnp.square(x-0.1) + jnp.square(y-0.1)))
 
 # we sample the perturbation
 nu = perturbation(params_nf.ls_params.X, 
@@ -88,12 +88,17 @@ primals, J_star = jax.vjp(near_field_vjp, nu_vect)
 
 rand_cotgnt = jax.random.normal(key, shape=(delta_u_nf.shape[0],)) + 1.j*jax.random.normal(key, shape=(delta_u_nf.shape[0],)) 
 
+rand_tgnt = jax.random.normal(key, shape=(delta_u_nf.shape[0],))
+
+# applying the linearized operator with a random perfurbation
+delta_u_nf = J(rand_tgnt)
+
 # this is not passing the adjoint test... to go back here 
 adjoint = J_star(rand_cotgnt)
 
 
 err = jnp.abs(jnp.sum(jnp.conj(rand_cotgnt)*delta_u_nf)\
-      - jnp.sum(jnp.conj(adjoint[0])*delta_nu_vect)*hx**2)\
+      - jnp.sum(jnp.conj(adjoint[0])*rand_tgnt)*hx**2)\
       /jnp.abs(jnp.sum(jnp.conj(rand_cotgnt)*delta_u_nf))
 
 print("error of adjoint test is %e"%err)

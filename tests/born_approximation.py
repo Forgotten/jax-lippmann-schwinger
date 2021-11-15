@@ -44,7 +44,7 @@ def perturbation(x,y):
 
 @jit
 def delta_perturbation(x,y):
-    return 0.01*jnp.exp(-1000*(jnp.square(x-0.1) + jnp.square(y-0.1)))
+    return 0.1*jnp.exp(-1000*(jnp.square(x-0.1) + jnp.square(y-0.1)))
 
 
 # we sample the perturbation
@@ -105,7 +105,7 @@ y, J = jax.linearize(near_field, nu_vect)
 
 near_field_born = J(delta_nu_vect)
 
-delta_t = 0.1
+delta_t = 0.01
 near_fiel_p_1 = near_field(nu_vect + delta_t*delta_nu_vect)
 near_fiel_m_1 = near_field(nu_vect - delta_t*delta_nu_vect)
 
