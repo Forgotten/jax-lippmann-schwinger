@@ -108,7 +108,10 @@ def near_field_map(params: NearFieldParams,
 
     nm, n_angles = params.G_sample.shape
 
-    near_field = jnp.sum( Sigma.T.reshape((n_angles, nm, 1))\
+    # computing the near field by integrating with the Green's
+    # function, the sign is due we are convolving with 
+    # 4/i H^{(1)}_0(k)
+    near_field = -jnp.sum( Sigma.T.reshape((n_angles, nm, 1))\
                          *params.G_sample.reshape((1, nm, n_angles)),
                          axis=1)*params.hx*params.hy
 
@@ -143,7 +146,10 @@ def near_field_map_vect(params: NearFieldParams,
     nm, n_angles = params.G_sample.shape
 
     # TODO: fix this! it is just a matrix-vector multiplication
-    near_field = jnp.sum( Sigma.T.reshape((n_angles, nm, 1))\
+    # computing the near field by integrating with the Green's
+    # function, the sign is due we are convolving with 
+    # 4/i H^{(1)}_0(k)
+    near_field = -jnp.sum( Sigma.T.reshape((n_angles, nm, 1))\
                          *params.G_sample.reshape((1, nm, n_angles)),
                          axis=1)*params.hx*params.hy
 
@@ -197,12 +203,17 @@ def near_field_map_vect_jvp(params, primals, tangents):
 
     # extracting sizes to evaluate the integrals  
     nm, n_angles = params.G_sample.shape
-
-    near_field = jnp.sum( Sigma.T.reshape((n_angles, nm, 1))\
+    # computing the near field by integrating with the Green's
+    # function, the sign is due we are convolving with 
+    # 4/i H^{(1)}_0(k)
+    near_field = -jnp.sum( Sigma.T.reshape((n_angles, nm, 1))\
                          *params.G_sample.reshape((1, nm, n_angles)),
                          axis=1)*params.hx*params.hy
 
-    delta_near_field = jnp.sum( delta_Sigma.T.reshape((n_angles, nm, 1))\
+    # computing the near field by integrating with the Green's
+    # function, the sign is due we are convolving with 
+    # 4/i H^{(1)}_0(k)
+    delta_near_field = -jnp.sum( delta_Sigma.T.reshape((n_angles, nm, 1))\
                          *params.G_sample.reshape((1, nm, n_angles)),
                          axis=1)*params.hx*params.hy
 
@@ -238,7 +249,10 @@ def near_field_map_vect_v2(params: NearFieldParams,
 
     nm, n_angles = params.G_sample.shape
 
-    near_field = jnp.sum( Sigma.T.reshape((n_angles, nm, 1))\
+    # computing the near field by integrating with the Green's
+    # function, the sign is due we are convolving with 
+    # 4/i H^{(1)}_0(k)
+    near_field = -jnp.sum( Sigma.T.reshape((n_angles, nm, 1))\
                          *params.G_sample.reshape((1, nm, n_angles)),
                          axis=1)*params.hx*params.hy
 
@@ -264,7 +278,10 @@ def near_field_map_vect_v2_fwd(params: NearFieldParams,
 
     nm, n_angles = params.G_sample.shape
 
-    near_field = jnp.sum( Sigma.T.reshape((n_angles, nm, 1))\
+    # computing the near field by integrating with the Green's
+    # function, the sign is due we are convolving with 
+    # 4/i H^{(1)}_0(k)
+    near_field = -jnp.sum( Sigma.T.reshape((n_angles, nm, 1))\
                          *params.G_sample.reshape((1, nm, n_angles)),
                          axis=1)*params.hx*params.hy
 
@@ -318,7 +335,7 @@ def near_field_map_vect_v2_bwd(params, fwd_res, res):
     U_adj = conj_green_batched(Sigma_adj) + U_adj_i
 
 
-    return (jnp.sum(jnp.conj(U_total)*U_adj, axis = 1),)
+    return (-jnp.sum(jnp.conj(U_total)*U_adj, axis = 1),)
 
 
 # we define the application of the adjoit
@@ -352,7 +369,7 @@ def near_field_l2_loss(params: NearFieldParams,
 
     nm, n_angles = params.G_sample.shape
 
-    near_field = jnp.sum( Sigma.T.reshape((n_angles, nm, 1))\
+    near_field = -jnp.sum( Sigma.T.reshape((n_angles, nm, 1))\
                          *params.G_sample.reshape((1, nm, n_angles)),
                          axis=1)*params.hx*params.hy
 
@@ -379,7 +396,7 @@ def near_field_l2_loss_fwd(params: NearFieldParams,
 
     nm, n_angles = params.G_sample.shape
 
-    near_field = jnp.sum( Sigma.T.reshape((n_angles, nm, 1))\
+    near_field = -jnp.sum( Sigma.T.reshape((n_angles, nm, 1))\
                          *params.G_sample.reshape((1, nm, n_angles)),
                          axis=1)*params.hx*params.hy
 
@@ -399,7 +416,7 @@ def near_field_l2_loss_bwd(params, u_data, fwd_res, cotangent):
                              out_axes=1))
 
     # defining the batched for the adjoint problem
-    solver_adj_batched = jit(vmap(jit(partial(ls_solver_batched_sigma,
+    solver_adj_batched = jit(vmap(jit(partial(ls_solver_batched_adj,
                                           params.ls_params,
                                           nu_vect)),
                               in_axes=1, 
@@ -466,7 +483,7 @@ def near_field_l2_loss_grad(params, u_data, nu_vect):
                              out_axes=1))
 
     # defining the batched for the adjoint problem
-    solver_adj_batched = jit(vmap(jit(partial(ls_solver_batched_sigma,
+    solver_adj_batched = jit(vmap(jit(partial(ls_solver_batched_adj,
                                           params.ls_params,
                                           nu_vect)),
                               in_axes=1, 
@@ -491,8 +508,8 @@ def near_field_l2_loss_grad(params, u_data, nu_vect):
 
     # TODO: this is just a matrix vector multiplication
     # it should be (params.G_sample.T)@Sigma
-    near_field = jnp.sum( Sigma.T.reshape((n_angles, nm, 1))\
-                         *params.G_sample.reshape((1, nm, n_angles)),
+    near_field = -jnp.sum(Sigma.T.reshape((n_angles, nm, 1))\
+                         *params.G_sample.reshape((1, nm, n_angles)),\
                          axis=1)*params.hx*params.hy
 
     # computing the residual
@@ -512,4 +529,6 @@ def near_field_l2_loss_grad(params, u_data, nu_vect):
 
     U_adj_total = U_adj + U_adj_i
 
-    return 0.5*jnp.sum(jnp.real((near_field - u_data) * jnp.conj(near_field - u_data))), jnp.sum(jnp.real(U_adj_total*jnp.conj(U_total)), axis = 1)
+    return 0.5*jnp.sum(jnp.real(res * jnp.conj(res))),\
+           jnp.sum(jnp.real(U_adj_total*jnp.conj(U_total)), axis = 1)
+
