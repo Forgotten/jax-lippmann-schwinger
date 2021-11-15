@@ -98,7 +98,7 @@ adjoint = J_star(rand_cotgnt)
 
 
 err = jnp.abs(jnp.sum(jnp.conj(rand_cotgnt)*delta_u_nf)\
-      - jnp.sum(jnp.conj(adjoint[0])*rand_tgnt)*hx**2)\
+      - jnp.sum(jnp.conj(adjoint[0])*rand_tgnt))\
       /jnp.abs(jnp.sum(jnp.conj(rand_cotgnt)*delta_u_nf))
 
 print("error of adjoint test is %e"%err)

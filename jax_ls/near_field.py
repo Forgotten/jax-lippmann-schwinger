@@ -348,8 +348,8 @@ near_field_map_vect_v2.defvjp(near_field_map_vect_v2_fwd, near_field_map_vect_v2
 ## implementing the L2 loss
 @partial(custom_vjp, nondiff_argnums=(0,1))
 def near_field_l2_loss(params: NearFieldParams, 
-            u_data: jnp.ndarray,
-            nu_vect: jnp.ndarray) -> jnp.ndarray:
+                       u_data: jnp.ndarray,
+                       nu_vect: jnp.ndarray) -> jnp.ndarray:
     """function to comput the near field in a circle of radious 1, 
     in this case we use the ls_solver_batched_sigma, which already has 
     a custom jvp implemented """
@@ -373,12 +373,14 @@ def near_field_l2_loss(params: NearFieldParams,
                          *params.G_sample.reshape((1, nm, n_angles)),
                          axis=1)*params.hx*params.hy
 
-    return 0.5*jnp.sum(jnp.real((near_field - u_data) * jnp.conj(near_field - u_data)))
+    misfit = near_field - u_data
+
+    return 0.5*jnp.sum(jnp.real( misfit * jnp.conj(misfit)))
  
 
 def near_field_l2_loss_fwd(params: NearFieldParams, 
-            u_data: jnp.ndarray,
-            nu_vect: jnp.ndarray) -> jnp.ndarray:
+                           u_data: jnp.ndarray,
+                           nu_vect: jnp.ndarray) -> jnp.ndarray:
     # forward solver to compute the misfit
 
     Rhs = -(params.ls_params.omega**2)\
@@ -450,7 +452,7 @@ def near_field_l2_loss_bwd(params, u_data, fwd_res, cotangent):
     # computing the scattered field
     U_adj = conj_green_batched(Sigma_adj) + U_adj_i
 
-    return (cotangent*jnp.sum(jnp.real(U_adj*jnp.conj(U_total)), axis = 1),)
+    return (-cotangent*jnp.sum(jnp.real(U_adj*jnp.conj(U_total)), axis = 1)*params.hx**2,)
 
 
 near_field_l2_loss.defvjp(near_field_l2_loss_fwd, near_field_l2_loss_bwd)
@@ -530,5 +532,5 @@ def near_field_l2_loss_grad(params, u_data, nu_vect):
     U_adj_total = U_adj + U_adj_i
 
     return 0.5*jnp.sum(jnp.real(res * jnp.conj(res))),\
-           jnp.sum(jnp.real(U_adj_total*jnp.conj(U_total)), axis = 1)
+           -jnp.sum(jnp.real(U_adj_total*jnp.conj(U_total))*params.hx**2, axis = 1)
 
