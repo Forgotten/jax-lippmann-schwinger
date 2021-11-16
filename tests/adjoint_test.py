@@ -79,7 +79,7 @@ y, J = jax.linearize(near_field, nu_vect)
 delta_u_nf = J(delta_nu_vect)
 
 # this is the function with the custom adjoint
-near_field_vjp = jit(partial(jax_ls.near_field_map_vect_v2, params_nf))
+near_field_vjp = jit(partial(jax_ls.near_field_map_vect_vjp, params_nf))
 
 near_field_data = near_field_vjp(nu_vect)
 

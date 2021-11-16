@@ -228,7 +228,7 @@ def near_field_map_vect_jvp(params, primals, tangents):
 # we implemented the application of the gradient using the born approximation
 
 @partial(custom_vjp, nondiff_argnums=(0,))
-def near_field_map_vect_v2(params: NearFieldParams, 
+def near_field_map_vect_vjp(params: NearFieldParams, 
                         nu_vect: jnp.ndarray) -> jnp.ndarray:
     """function to comput the near field in a circle of radious 1, 
     in this case we use the ls_solver_batched_sigma, which already has 
@@ -260,7 +260,7 @@ def near_field_map_vect_v2(params: NearFieldParams,
 
 
 @jit
-def near_field_map_vect_v2_fwd(params: NearFieldParams, 
+def near_field_map_vect_vjp_fwd(params: NearFieldParams, 
                                nu_vect: jnp.ndarray):
     
     Rhs = -(params.ls_params.omega**2)\
@@ -289,7 +289,7 @@ def near_field_map_vect_v2_fwd(params: NearFieldParams,
 
 
 @jit
-def near_field_map_vect_v2_bwd(params, fwd_res, res):
+def near_field_map_vect_vjp_bwd(params, fwd_res, res):
     """ Function to compute adjoint of the near field operator
     """
 
@@ -339,7 +339,7 @@ def near_field_map_vect_v2_bwd(params, fwd_res, res):
 
 
 # we define the application of the adjoit
-near_field_map_vect_v2.defvjp(near_field_map_vect_v2_fwd, near_field_map_vect_v2_bwd)
+near_field_map_vect_vjp.defvjp(near_field_map_vect_vjp_fwd, near_field_map_vect_vjp_bwd)
 
 ########################################################################################
 ########################################################################################
