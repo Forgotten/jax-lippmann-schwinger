@@ -93,12 +93,12 @@ rand_tgnt = jax.random.normal(key, shape=(delta_u_nf.shape[0],))
 # applying the linearized operator with a random perfurbation
 delta_u_nf = J(rand_tgnt)
 
-# this is not passing the adjoint test... to go back here 
-adjoint = J_star(rand_cotgnt)
+# JAX passes the adjoint to the J_star, so we need to follow the convention
+adjoint = J_star((rand_cotgnt))
 
 
 err = jnp.abs(jnp.sum(jnp.conj(rand_cotgnt)*delta_u_nf)\
-      - jnp.sum(jnp.conj(adjoint[0])*rand_tgnt))\
+            - jnp.sum(jnp.conj(adjoint[0])*rand_tgnt))\
       /jnp.abs(jnp.sum(jnp.conj(rand_cotgnt)*delta_u_nf))
 
 print("error of adjoint test is %e"%err)

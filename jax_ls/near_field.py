@@ -13,7 +13,6 @@ from jax import random
 import jax
 import jax.numpy as jnp
 
-
 from typing import NamedTuple
 
 
@@ -293,7 +292,138 @@ def near_field_map_vect_vjp_bwd(params, fwd_res, res):
     """ Function to compute adjoint of the near field operator
     """
 
-    Sigma, nu_vect = fwd_res
+    # import pdb; pdb.set_trace()
+    
+    Sigma, nu_vect, = fwd_res
+
+    # defining the batched for the adjoint problem
+    solver_adj_batched = jit(vmap(jit(partial(ls_solver_batched_adj,
+                                          params.ls_params,
+                                          nu_vect)),
+                              in_axes=1, 
+                              out_axes=1))
+
+    conj_green_batched = jit(vmap(jit(partial(apply_conj_green_function,
+                                         params.ls_params)),
+                             in_axes=1,
+                             out_axes=1))
+
+    green_batched = jit(vmap(jit(partial(apply_green_function,
+                                         params.ls_params)),
+                             in_axes=1,
+                             out_axes=1))
+
+
+    # computing the scattered field
+    U_s = green_batched(Sigma)
+
+    # computing the total field
+    U_total = U_s + params.G_sample
+
+    nm, n_angles = params.G_sample.shape
+
+    # # incident field in the adjoint problem 
+    # # using the weird definition from Jax that pases res^* instead of res
+    # U_adj_i = (params.ls_params.omega**2)*(jnp.conj(params.G_sample)\
+    #           @jnp.conj(res).reshape((n_angles,n_angles)))
+    
+    # incident field in the adjoint problem 
+    U_adj_i = (params.ls_params.omega**2)*(jnp.conj(params.G_sample)\
+              @res.reshape((n_angles,n_angles)))
+
+    # assembling the adjoint RHS for the integral equation
+    Rhs_adjoint = -(params.ls_params.omega**2)*U_adj_i*nu_vect.reshape((-1,1))
+
+    # solve for all the rhs in a vectorized fashion
+    Sigma_adj = solver_adj_batched(Rhs_adjoint)
+
+    # computing the scattered field
+    U_adj = conj_green_batched(Sigma_adj) + U_adj_i
+
+    # import pdb; pdb.set_trace()
+
+    return (-(jnp.sum(jnp.conj(U_total)*U_adj*params.hx**2, axis = 1)),)
+
+
+# we define the application of the adjoit
+near_field_map_vect_vjp.defvjp(near_field_map_vect_vjp_fwd, near_field_map_vect_vjp_bwd)
+
+########################################################################################
+########################################################################################
+
+## adding a near field with custom J^* following the convenction of JAX
+## in particular we have that JAX asks for conj(f)*J = conj(J^*f)
+## basically we need to change f by conj(f)
+
+@partial(custom_vjp, nondiff_argnums=(0,))
+def near_field_map_vect_jax(params: NearFieldParams, 
+                        nu_vect: jnp.ndarray) -> jnp.ndarray:
+    """function to comput the near field in a circle of radious 1, 
+    in this case we use the ls_solver_batched_sigma, which already has 
+    a custom vjp """
+
+    Rhs = -(params.ls_params.omega**2)\
+           *nu_vect.reshape((-1,1))*params.G_sample
+
+    # defining the batched transformations
+    solver_batched = jit(vmap(jit(partial(ls_solver_batched_sigma,
+                                          params.ls_params,
+                                          nu_vect)),
+                              in_axes=1, 
+                              out_axes=1))
+
+    # solve for all the rhs in a vectorized fashion
+    Sigma = solver_batched(Rhs)
+
+    nm, n_angles = params.G_sample.shape
+
+    # computing the near field by integrating with the Green's
+    # function, the sign is due we are convolving with 
+    # 4/i H^{(1)}_0(k)
+    near_field = -jnp.sum( Sigma.T.reshape((n_angles, nm, 1))\
+                         *params.G_sample.reshape((1, nm, n_angles)),
+                         axis=1)*params.hx*params.hy
+
+    return near_field.reshape((-1,))
+
+
+@jit
+def near_field_map_vect_jax_fwd(params: NearFieldParams, 
+                               nu_vect: jnp.ndarray):
+    
+    Rhs = -(params.ls_params.omega**2)\
+           *nu_vect.reshape((-1,1))*params.G_sample
+
+    # defining the batched transformations
+    solver_batched = jit(vmap(jit(partial(ls_solver_batched_sigma,
+                                          params.ls_params,
+                                          nu_vect)),
+                              in_axes=1, 
+                              out_axes=1))
+
+    # solve for all the rhs in a vectorized fashion
+    Sigma = solver_batched(Rhs)
+
+    nm, n_angles = params.G_sample.shape
+
+    # computing the near field by integrating with the Green's
+    # function, the sign is due we are convolving with 
+    # 4/i H^{(1)}_0(k)
+    near_field = -jnp.sum( Sigma.T.reshape((n_angles, nm, 1))\
+                         *params.G_sample.reshape((1, nm, n_angles)),
+                         axis=1)*params.hx*params.hy
+
+    return near_field.reshape((-1,)), (Sigma, nu_vect)
+
+
+@jit
+def near_field_map_vect_jax_bwd(params, fwd_res, res):
+    """ Function to compute adjoint of the near field operator
+    """
+
+    # import pdb; pdb.set_trace()
+    
+    Sigma, nu_vect, = fwd_res
 
     # defining the batched for the adjoint problem
     solver_adj_batched = jit(vmap(jit(partial(ls_solver_batched_adj,
@@ -322,8 +452,13 @@ def near_field_map_vect_vjp_bwd(params, fwd_res, res):
     nm, n_angles = params.G_sample.shape
 
     # incident field in the adjoint problem 
+    # using the weird definition from Jax that pases res^* instead of res
     U_adj_i = (params.ls_params.omega**2)*(jnp.conj(params.G_sample)\
-              @res.reshape((n_angles,n_angles)))
+              @jnp.conj(res).reshape((n_angles,n_angles)))
+    
+    # # incident field in the adjoint problem 
+    # U_adj_i = (params.ls_params.omega**2)*(jnp.conj(params.G_sample)\
+    #           @res.reshape((n_angles,n_angles)))
 
     # assembling the adjoint RHS for the integral equation
     Rhs_adjoint = -(params.ls_params.omega**2)*U_adj_i*nu_vect.reshape((-1,1))
@@ -334,12 +469,14 @@ def near_field_map_vect_vjp_bwd(params, fwd_res, res):
     # computing the scattered field
     U_adj = conj_green_batched(Sigma_adj) + U_adj_i
 
+    # import pdb; pdb.set_trace()
 
-    return (-jnp.sum(jnp.conj(U_total)*U_adj, axis = 1),)
+    return (-jnp.conj(jnp.sum(jnp.conj(U_total)*U_adj*params.hx**2, axis = 1)),)
 
 
 # we define the application of the adjoit
-near_field_map_vect_vjp.defvjp(near_field_map_vect_vjp_fwd, near_field_map_vect_vjp_bwd)
+near_field_map_vect_jax.defvjp(near_field_map_vect_jax_fwd, near_field_map_vect_jax_bwd)
+
 
 ########################################################################################
 ########################################################################################
@@ -377,7 +514,7 @@ def near_field_l2_loss(params: NearFieldParams,
 
     return 0.5*jnp.sum(jnp.real( misfit * jnp.conj(misfit)))
  
-
+@jit
 def near_field_l2_loss_fwd(params: NearFieldParams, 
                            u_data: jnp.ndarray,
                            nu_vect: jnp.ndarray) -> jnp.ndarray:
@@ -406,6 +543,7 @@ def near_field_l2_loss_fwd(params: NearFieldParams,
 
     return 0.5*jnp.sum(jnp.real(res * jnp.conj(res))), (Sigma, res, nu_vect)
 
+@jit
 def near_field_l2_loss_bwd(params, u_data, fwd_res, cotangent):
 
     # we load the density for the forward pass and the residual from the 
@@ -452,9 +590,11 @@ def near_field_l2_loss_bwd(params, u_data, fwd_res, cotangent):
     # computing the scattered field
     U_adj = conj_green_batched(Sigma_adj) + U_adj_i
 
+    # import pdb; pdb.set_trace()
+        
     return (-cotangent*jnp.sum(jnp.real(U_adj*jnp.conj(U_total)), axis = 1)*params.hx**2,)
 
-
+# defining the vector-Jacobian product
 near_field_l2_loss.defvjp(near_field_l2_loss_fwd, near_field_l2_loss_bwd)
 
 
