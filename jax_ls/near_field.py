@@ -110,9 +110,9 @@ def near_field_map(params: NearFieldParams,
     # computing the near field by integrating with the Green's
     # function, the sign is due we are convolving with 
     # 4/i H^{(1)}_0(k)
-    near_field = -jnp.sum( Sigma.T.reshape((n_angles, nm, 1))\
-                         *params.G_sample.reshape((1, nm, n_angles)),
-                         axis=1)*params.hx*params.hy
+    near_field = -(Sigma.T.reshape((n_angles, nm))\
+                   @ params.G_sample.reshape((nm, n_angles)))\
+                   *params.hx*params.hy
 
     return near_field
 
@@ -148,9 +148,9 @@ def near_field_map_vect(params: NearFieldParams,
     # computing the near field by integrating with the Green's
     # function, the sign is due we are convolving with 
     # 4/i H^{(1)}_0(k)
-    near_field = -jnp.sum( Sigma.T.reshape((n_angles, nm, 1))\
-                         *params.G_sample.reshape((1, nm, n_angles)),
-                         axis=1)*params.hx*params.hy
+    near_field = -(Sigma.T.reshape((n_angles, nm))\
+                   @ params.G_sample.reshape((nm, n_angles)))\
+                   *params.hx*params.hy
 
     return near_field.reshape((-1,))
 
@@ -205,16 +205,16 @@ def near_field_map_vect_jvp(params, primals, tangents):
     # computing the near field by integrating with the Green's
     # function, the sign is due we are convolving with 
     # 4/i H^{(1)}_0(k)
-    near_field = -jnp.sum( Sigma.T.reshape((n_angles, nm, 1))\
-                         *params.G_sample.reshape((1, nm, n_angles)),
-                         axis=1)*params.hx*params.hy
+    near_field = -(Sigma.T.reshape((n_angles, nm))\
+                   @ params.G_sample.reshape((nm, n_angles)))\
+                   *params.hx*params.hy
 
     # computing the near field by integrating with the Green's
     # function, the sign is due we are convolving with 
     # 4/i H^{(1)}_0(k)
-    delta_near_field = -jnp.sum( delta_Sigma.T.reshape((n_angles, nm, 1))\
-                         *params.G_sample.reshape((1, nm, n_angles)),
-                         axis=1)*params.hx*params.hy
+    delta_near_field = -(delta_Sigma.T.reshape((n_angles, nm))\
+                         @ params.G_sample.reshape((nm, n_angles)))\
+                         *params.hx*params.hy
 
 
     return near_field.reshape((-1,)), delta_near_field.reshape((-1,))
@@ -251,9 +251,9 @@ def near_field_map_vect_vjp(params: NearFieldParams,
     # computing the near field by integrating with the Green's
     # function, the sign is due we are convolving with 
     # 4/i H^{(1)}_0(k)
-    near_field = -jnp.sum( Sigma.T.reshape((n_angles, nm, 1))\
-                         *params.G_sample.reshape((1, nm, n_angles)),
-                         axis=1)*params.hx*params.hy
+    near_field = -(Sigma.T.reshape((n_angles, nm))\
+                   @ params.G_sample.reshape((nm, n_angles)))\
+                   *params.hx*params.hy
 
     return near_field.reshape((-1,))
 
@@ -280,9 +280,9 @@ def near_field_map_vect_vjp_fwd(params: NearFieldParams,
     # computing the near field by integrating with the Green's
     # function, the sign is due we are convolving with 
     # 4/i H^{(1)}_0(k)
-    near_field = -jnp.sum( Sigma.T.reshape((n_angles, nm, 1))\
-                         *params.G_sample.reshape((1, nm, n_angles)),
-                         axis=1)*params.hx*params.hy
+    near_field = -(Sigma.T.reshape((n_angles, nm))\
+                   @ params.G_sample.reshape((nm, n_angles)))\
+                   *params.hx*params.hy
 
     return near_field.reshape((-1,)), (Sigma, nu_vect)
 
@@ -380,9 +380,9 @@ def near_field_map_vect_jax(params: NearFieldParams,
     # computing the near field by integrating with the Green's
     # function, the sign is due we are convolving with 
     # 4/i H^{(1)}_0(k)
-    near_field = -jnp.sum( Sigma.T.reshape((n_angles, nm, 1))\
-                         *params.G_sample.reshape((1, nm, n_angles)),
-                         axis=1)*params.hx*params.hy
+    near_field = -(Sigma.T.reshape((n_angles, nm))\
+                   @ params.G_sample.reshape((nm, n_angles)))\
+                   *params.hx*params.hy
 
     return near_field.reshape((-1,))
 
@@ -409,9 +409,9 @@ def near_field_map_vect_jax_fwd(params: NearFieldParams,
     # computing the near field by integrating with the Green's
     # function, the sign is due we are convolving with 
     # 4/i H^{(1)}_0(k)
-    near_field = -jnp.sum( Sigma.T.reshape((n_angles, nm, 1))\
-                         *params.G_sample.reshape((1, nm, n_angles)),
-                         axis=1)*params.hx*params.hy
+    near_field = -(Sigma.T.reshape((n_angles, nm))\
+                   @ params.G_sample.reshape((nm, n_angles)))\
+                   *params.hx*params.hy
 
     return near_field.reshape((-1,)), (Sigma, nu_vect)
 
@@ -535,9 +535,9 @@ def near_field_l2_loss_fwd(params: NearFieldParams,
 
     nm, n_angles = params.G_sample.shape
 
-    near_field = -jnp.sum( Sigma.T.reshape((n_angles, nm, 1))\
-                         *params.G_sample.reshape((1, nm, n_angles)),
-                         axis=1)*params.hx*params.hy
+    near_field = -(Sigma.T.reshape((n_angles, nm))\
+                   @ params.G_sample.reshape((nm, n_angles)))\
+                   *params.hx*params.hy
 
     res = near_field - u_data
 
@@ -650,9 +650,9 @@ def near_field_l2_loss_grad(params, u_data, nu_vect):
 
     # TODO: this is just a matrix vector multiplication
     # it should be (params.G_sample.T)@Sigma
-    near_field = -jnp.sum(Sigma.T.reshape((n_angles, nm, 1))\
-                         *params.G_sample.reshape((1, nm, n_angles)),\
-                         axis=1)*params.hx*params.hy
+    near_field = -(Sigma.T.reshape((n_angles, nm))\
+                   @ params.G_sample.reshape((nm, n_angles)))\
+                   *params.hx*params.hy
 
     # computing the residual
     res = near_field - u_data 

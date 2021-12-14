@@ -63,11 +63,14 @@ loss_vjp = jit(partial(jax_ls.near_field_l2_loss, params_nf, near_field_data_v2.
 
 print("initial loss with zero initial guess %e"%(loss_vjp(0*nu_vect)))
 
+start_time = time.perf_counter() 
 opt_result = jax.scipy.optimize.minimize(loss_vjp, x0 = jnp.real(0*nu_vect), method = "bfgs")
+end_time = time.perf_counter() 
 
 opt_nu = opt_result.x
 
 print("Final loss with zero initial guess %e"%(loss_vjp(opt_nu)))
+print("Time elapsed in the optimization loop %.2f[s]"%(end_time - start_time))
 
 
 # ploting the near field map 
