@@ -13,7 +13,6 @@ import time
 
 import jax_ls
 
-
 # size of the domain in x and y
 ax = 1.0
 ay = 1.0
@@ -66,6 +65,3 @@ plt.xticks([]); plt.yticks([]);
 plt.title('imaginary part', color='black')
 
 plt.show()
-
-
-

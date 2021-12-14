@@ -25,7 +25,7 @@ ay = 1.0
 n = 2**8
 m = n
 
-# we choose to have 4 points per wavelenght
+# we choose to have 6 points per wavelenght
 omega = 2*jnp.pi*(n//6)
 
 # initialize the parameters

@@ -37,8 +37,8 @@ n_angles = n
 
 # initialize the parameters
 params_nf = jax_ls.init_params_near_field(ax, ay, n, m,\
-                       					  sampling_radious,\
-                       					  n_angles, omega)
+                                         sampling_radious,\
+                                         n_angles, omega)
 
 # definition of the perturbation by the lense
 @jit
@@ -53,7 +53,7 @@ nu_vect  = jnp.reshape(nu, (-1,))
 
 
 # jitting the near field map (vectorized) with the custom vjp
-near_field_vjp = jit(partial(jax_ls.near_field_map_vect_v2, params_nf))
+near_field_vjp = jit(partial(jax_ls.near_field_map_vect_vjp, params_nf))
 
 # reference wavefield (i.e. data)
 near_field_data_v2 = near_field_vjp(nu_vect)

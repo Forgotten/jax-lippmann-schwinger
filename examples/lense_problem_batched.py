@@ -105,6 +105,7 @@ solver_jit = jit(partial(jax_ls.ls_solver_batched, params, nu_vect))
 solver_batched = jit(vmap(solver_jit, 
                                 in_axes=1, 
                                 out_axes=1))
+
 green_batched = jit(vmap(partial(jax_ls.apply_green_function, params),
                          in_axes=1,
                          out_axes=1))

@@ -90,7 +90,8 @@ U_s = green_batched(Sigma)
 end = time.time()
 print("overall time elapse was %d[s]"%(end-start))
 
-near_field = jnp.sum(Sigma.T.reshape((n_angles,-1,1))*U_i.reshape(1,-1,n_angles), axis=1)*hx*hx
+near_field = hx**2*(  Sigma.T.reshape((n_angles,-1))\
+                    @ U_i.reshape(-1,n_angles))
 
 
 plt.figure(figsize=(10,5))
