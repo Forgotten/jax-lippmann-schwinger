@@ -1,0 +1,43 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Output files
+*.png
+debug_integration.py
+
+# Packages
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# IDEs and environments
+.idea/
+.vscode/
+.env
+.venv
+env/
+venv/
+ENV/
+
+# Testing and caching
+.pytest_cache/
+.coverage
+.tox/
+.nox/
+coverage.xml
+*.cover
+.ruff_cache/
+.mypy_cache/
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db

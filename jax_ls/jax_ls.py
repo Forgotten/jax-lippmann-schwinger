@@ -85,7 +85,7 @@ def apply_green_function(params: LippSchwinParams,\
     n, m =  ne//4, me//4
 
     # we create the intermediate vector
-    BExt = jnp.zeros((ne, me), dtype=np.complex64)
+    BExt = jnp.zeros((ne, me), dtype=params.GFFT.dtype)
     BExt = BExt.at[:n,:m].set(jnp.reshape(u, (n,m)))
 
     # Fourier Transform
@@ -109,7 +109,7 @@ def apply_lipp_schwin(params: LippSchwinParams,
     ne, me = params.GFFT.shape[0], params.GFFT.shape[1]
     n, m =  ne//4, me//4
 
-    BExt = jnp.zeros((ne, me), dtype=np.complex64)
+    BExt = jnp.zeros((ne, me), dtype=params.GFFT.dtype)
     BExt = BExt.at[:n,:m].set(jnp.reshape(u, (n,m)))
 
     # Fourier Transform
@@ -137,7 +137,7 @@ def apply_conj_green_function(params: LippSchwinParams,\
     n, m =  ne//4, me//4
 
     # we create the intermediate vector
-    BExt = jnp.zeros((ne, me), dtype=np.complex64)
+    BExt = jnp.zeros((ne, me), dtype=params.GFFT.dtype)
     BExt = BExt.at[:n,:m].set(jnp.reshape(u, (n,m)))
 
     # Fourier Transform
@@ -162,7 +162,7 @@ def apply_lipp_schwin_adj(params: LippSchwinParams,
     ne, me = params.GFFT.shape[0], params.GFFT.shape[1]
     n, m =  ne//4, me//4
 
-    BExt = jnp.zeros((ne, me), dtype=np.complex64)
+    BExt = jnp.zeros((ne, me), dtype=params.GFFT.dtype)
     BExt = BExt.at[:n,:m].set(jnp.reshape(u, (n,m)))
 
     # Fourier Transform
@@ -309,7 +309,7 @@ def apply_green_function_raw(GFFT: jnp.ndarray,
 
     n, m =  GFFT.shape[0]//4, GFFT.shape[1]//4
 
-    BExt = jnp.zeros(GFFT.shape, dtype=np.complex64)
+    BExt = jnp.zeros(GFFT.shape, dtype=GFFT.dtype)
     BExt = BExt.at[:n,:m].set(jnp.reshape(u,(n,m)))
 
     # Fourier Transform
