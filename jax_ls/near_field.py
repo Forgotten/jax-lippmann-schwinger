@@ -710,29 +710,23 @@ def near_field_l2_loss_bwd(
   # We load the density for the forward pass and the residual from the misfit.
   Sigma, res, nu_vect = fwd_res
 
-  green_batched = jit(
-    vmap(
-      jit(partial(apply_green_function, params.ls_params)),
-      in_axes=1,
-      out_axes=1,
-    )
+  green_batched = vmap(
+    jit(partial(apply_green_function, params.ls_params)),
+    in_axes=1,
+    out_axes=1,
   )
 
   # Defining the batched for the adjoint problem.
-  solver_adj_batched = jit(
-    vmap(
-      jit(partial(ls_solver_batched_adj, params.ls_params, nu_vect)),
-      in_axes=1,
-      out_axes=1,
-    )
+  solver_adj_batched = vmap(
+    jit(partial(ls_solver_batched_adj, params.ls_params, nu_vect)),
+    in_axes=1,
+    out_axes=1,
   )
 
-  conj_green_batched = jit(
-    vmap(
-      jit(partial(apply_conj_green_function, params.ls_params)),
-      in_axes=1,
-      out_axes=1,
-    )
+  conj_green_batched = vmap(
+    jit(partial(apply_conj_green_function, params.ls_params)),
+    in_axes=1,
+    out_axes=1,
   )
 
   # Computing the scattered field.
@@ -794,37 +788,29 @@ def near_field_l2_loss_grad(
   )
 
   # Defining the batched transformations.
-  solver_batched = jit(
-    vmap(
-      jit(partial(ls_solver_batched, params.ls_params, nu_vect)),
-      in_axes=1,
-      out_axes=1,
-    )
+  solver_batched = vmap(
+    partial(ls_solver_batched, params.ls_params, nu_vect),
+    in_axes=1,
+    out_axes=1,
   )
 
-  green_batched = jit(
-    vmap(
-      jit(partial(apply_green_function, params.ls_params)),
-      in_axes=1,
-      out_axes=1,
-    )
+  green_batched = vmap(
+    partial(apply_green_function, params.ls_params),
+    in_axes=1,
+    out_axes=1,
   )
 
   # Defining the batched for the adjoint problem.
-  solver_adj_batched = jit(
-    vmap(
-      jit(partial(ls_solver_batched_adj, params.ls_params, nu_vect)),
-      in_axes=1,
-      out_axes=1,
-    )
+  solver_adj_batched = vmap(
+    partial(ls_solver_batched_adj, params.ls_params, nu_vect),
+    in_axes=1,
+    out_axes=1,
   )
 
-  conj_green_batched = jit(
-    vmap(
-      jit(partial(apply_conj_green_function, params.ls_params)),
-      in_axes=1,
-      out_axes=1,
-    )
+  conj_green_batched = vmap(
+    partial(apply_conj_green_function, params.ls_params),
+    in_axes=1,
+    out_axes=1,
   )
 
   # Solve for all the rhs in a vectorized fashion.
