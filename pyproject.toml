@@ -1,4 +1,5 @@
 [tool.ruff]
+line-length = 80
 indent-width = 2
 [tool.ruff.format]
 indent-style = "space"

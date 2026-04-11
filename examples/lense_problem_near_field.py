@@ -1,12 +1,9 @@
 import context
 
-import numpy as np
 import scipy as sp
 import matplotlib.pyplot as plt
-from functools import partial
 
-from jax import grad, jit, vmap
-from jax import lax
+from jax import jit
 from jax import random
 import jax
 import jax.numpy as jnp
@@ -14,9 +11,8 @@ import time
 
 import jax_ls
 
-from jax import random
 
-key = random.PRNGKey(0)
+key = jax.random.PRNGKey(0)
 
 # size of the domain in x and y
 ax = 1.0
@@ -109,7 +105,11 @@ d_theta = jnp.pi * 2 / (n_angles)
 theta = jnp.linspace(jnp.pi, 3 * jnp.pi - d_theta, n_angles)
 radious = 1.0
 X_s = radious * jnp.concatenate(
-  [jnp.cos(theta).reshape((n_angles, 1)), jnp.sin(theta).reshape((n_angles, 1))], axis=1
+  [
+    jnp.cos(theta).reshape((n_angles, 1)),
+    jnp.sin(theta).reshape((n_angles, 1)),
+  ],
+  axis=1,
 )
 
 R = jnp.sqrt(

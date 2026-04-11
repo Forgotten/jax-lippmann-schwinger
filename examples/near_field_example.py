@@ -1,22 +1,18 @@
 import context
 
-import numpy as np
 import scipy as sp
 import matplotlib.pyplot as plt
 from functools import partial
 
-from jax import grad, jit, vmap
-from jax import lax
-from jax import random
 import jax
+from jax import jit, vmap
 import jax.numpy as jnp
 import time
 
 import jax_ls
 
-from jax import random
 
-key = random.PRNGKey(0)
+key = jax.random.PRNGKey(0)
 
 # size of the domain in x and y
 ax = 1.0
@@ -52,12 +48,16 @@ nu = perturbation(params.X, params.Y)
 nu_vect = jnp.reshape(nu, (-1,))
 
 # defining the batched transformations
-solver_batched = jit(
-  vmap(jit(partial(jax_ls.ls_solver_batched, params, nu_vect)), in_axes=1, out_axes=1)
+solver_batched = vmap(
+  partial(jax_ls.ls_solver_batched, params, nu_vect),
+  in_axes=1,
+  out_axes=1,
 )
 
-green_batched = jit(
-  vmap(partial(jax_ls.apply_green_function, params), in_axes=1, out_axes=1)
+green_batched = vmap(
+  partial(jax_ls.apply_green_function, params),
+  in_axes=1,
+  out_axes=1,
 )
 
 # we seek to sample the wavefield on the observation manifold
@@ -70,7 +70,11 @@ radious = 1.0
 
 # defining the observation (and sampling) manifold
 X_s = radious * jnp.concatenate(
-  [jnp.cos(theta).reshape((n_angles, 1)), jnp.sin(theta).reshape((n_angles, 1))], axis=1
+  [
+    jnp.cos(theta).reshape((n_angles, 1)),
+    jnp.sin(theta).reshape((n_angles, 1)),
+  ],
+  axis=1,
 )
 
 # computing the distances to each evaluation poitn
@@ -92,7 +96,9 @@ U_s = green_batched(Sigma)
 end = time.time()
 print("overall time elapse was %d[s]" % (end - start))
 
-near_field = hx**2 * (Sigma.T.reshape((n_angles, -1)) @ U_i.reshape(-1, n_angles))
+near_field = hx**2 * (
+  Sigma.T.reshape((n_angles, -1)) @ U_i.reshape(-1, n_angles)
+)
 
 plt.figure(figsize=(10, 5))
 plt.subplot(1, 2, 1)

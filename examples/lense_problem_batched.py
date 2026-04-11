@@ -3,7 +3,7 @@ import context
 import matplotlib.pyplot as plt
 from functools import partial
 
-from jax import grad, jit, vmap
+from jax import jit, vmap
 import jax
 import jax.numpy as jnp
 import time
@@ -88,7 +88,10 @@ n_angles = 10
 d_theta = jnp.pi * 2 / (n_angles)
 theta = jnp.linspace(jnp.pi, 3 * jnp.pi - d_theta, n_angles)
 S = jnp.concatenate(
-  [jnp.cos(theta).reshape((n_angles, 1)), jnp.sin(theta).reshape((n_angles, 1))],
+  [
+    jnp.cos(theta).reshape((n_angles, 1)),
+    jnp.sin(theta).reshape((n_angles, 1)),
+  ],
   axis=1,
 )
 
@@ -107,10 +110,10 @@ Rhs = -(omega**2) * nu.reshape((-1, 1)) * U_i
 
 solver_jit = jit(partial(jax_ls.ls_solver_batched, params, nu_vect))
 
-solver_batched = jit(vmap(solver_jit, in_axes=1, out_axes=1))
+solver_batched = vmap(solver_jit, in_axes=1, out_axes=1)
 
-green_batched = jit(
-  vmap(partial(jax_ls.apply_green_function, params), in_axes=1, out_axes=1)
+green_batched = vmap(
+  partial(jax_ls.apply_green_function, params), in_axes=1, out_axes=1
 )
 
 # triger compilation with a small righ-hand side
@@ -132,7 +135,10 @@ n_angles = 100
 d_theta = jnp.pi * 2 / (n_angles)
 theta = jnp.linspace(jnp.pi, 3 * jnp.pi - d_theta, n_angles)
 S = jnp.concatenate(
-  [jnp.cos(theta).reshape((n_angles, 1)), jnp.sin(theta).reshape((n_angles, 1))],
+  [
+    jnp.cos(theta).reshape((n_angles, 1)),
+    jnp.sin(theta).reshape((n_angles, 1)),
+  ],
   axis=1,
 )
 

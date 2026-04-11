@@ -1,22 +1,14 @@
 import context
 
-import numpy as np
-import scipy as sp
 import matplotlib.pyplot as plt
-from functools import partial
 
-from jax import grad, jit, vmap
-from jax import lax
-from jax import random
+from jax import jit
 import jax
 import jax.numpy as jnp
-import time
-
 import jax_ls
 
-from jax import random
 
-key = random.PRNGKey(0)
+key = jax.random.PRNGKey(0)
 
 # size of the domain in x and y
 ax = 1.0

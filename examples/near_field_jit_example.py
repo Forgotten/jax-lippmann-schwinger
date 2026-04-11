@@ -1,13 +1,9 @@
 import context
 
-import numpy as np
-import scipy as sp
 import matplotlib.pyplot as plt
-from functools import partial
 
 from jax import jit
 
-import jax
 import jax.numpy as jnp
 import time
 
@@ -35,9 +31,8 @@ params_nf = jax_ls.init_params_near_field(
   ax, ay, n, m, sampling_radious, n_angles, omega
 )
 
+
 # definition of the perturbation by the lense
-
-
 @jit
 def perturbation(x, y):
   return jnp.exp(-100 * (jnp.square(x) + jnp.square(y)))
