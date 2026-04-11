@@ -1,64 +1,63 @@
-import context
-
-import matplotlib.pyplot as plt
+import time
 from functools import partial
 
-from jax import jit, vmap
 import jax
 import jax.numpy as jnp
-import time
+import matplotlib.pyplot as plt
+from jax import jit, vmap
 
+import context
 import jax_ls
 
 key = jax.random.PRNGKey(0)
 
-# size of the domain in x and y
+# Size of the domain in x and y.
 ax = 1.0
 ay = 1.0
 
-# number of discretization points per dimension
+# Number of discretization points per dimension.
 n = 2**8
 m = n
 
-# we choose to have 4 points per wavelenght
+# We choose to have 4 points per wavelength.
 omega = 2 * jnp.pi * (n // 4)
 
-# initialize the parameters
+# Initialize the parameters.
 params = jax_ls.init_params(ax, ay, n, m, omega)
 
 
-# definition of the perturbation by the lense
+# Definition of the perturbation by the lens.
 @jit
 def perturbation(x, y):
   return jnp.exp(-100 * (jnp.square(x) + jnp.square(y)))
 
 
-# we sample the perturbation
+# We sample the perturbation.
 nu = perturbation(params.X, params.Y)
 nu_vect = jnp.reshape(nu, (-1,))
 
-# we choose the direction of the incident field
+# We choose the direction of the incident field.
 s = jnp.array([0, 1])
-s = s / jnp.linalg.norm(s)  # we normalize it
+s = s / jnp.linalg.norm(s)  # We normalize it.
 
-# we initialize the incident field
+# We initialize the incident field.
 u_i = jnp.exp(1j * omega * (params.X * s[0] + params.Y * s[1]))
 
-# we create the right hand side
+# We create the right hand side.
 rhs = -(omega**2) * nu * u_i
 
-# which is then reshaped
+# Which is then reshaped.
 f = jnp.reshape(rhs, (-1,))
 
-# solve for the density u = G*sigma
+# Solve for the density u = G * sigma.
 start = time.time()
 sigma = jax_ls.ls_solver(params, nu_vect, f)
 
-# computing the scattered field from the density
+# Computing the scattered field from the density.
 u_s = jax_ls.apply_green_function(params, sigma)
 
 end = time.time()
-print("overall time elapse was %e[s]" % (end - start))
+print("overall time elapsed was %e[s]" % (end - start))
 
 plt.figure(figsize=(10, 10))
 plt.subplot(2, 2, 1)
@@ -81,9 +80,9 @@ plt.subplot(2, 2, 4)
 plt.imshow(jnp.imag(u_i + u_s.reshape(n, m)))
 plt.xticks([])
 plt.yticks([])
-# now we try to batch and parallelize the solution, which is usefull
-# when computing the farfield operator
 
+# Now we try to batch and parallelize the solution, which is useful
+# when computing the far-field operator.
 n_angles = 10
 d_theta = jnp.pi * 2 / (n_angles)
 theta = jnp.linspace(jnp.pi, 3 * jnp.pi - d_theta, n_angles)
@@ -106,7 +105,7 @@ U_i = jnp.exp(
 
 Rhs = -(omega**2) * nu.reshape((-1, 1)) * U_i
 
-# now we want to solve this problem in a batched form
+# Now we want to resolve this problem in a batched form.
 
 solver_jit = jit(partial(jax_ls.ls_solver_batched, params, nu_vect))
 
@@ -116,20 +115,19 @@ green_batched = vmap(
   partial(jax_ls.apply_green_function, params), in_axes=1, out_axes=1
 )
 
-# triger compilation with a small righ-hand side
+# Trigger compilation with a small right-hand side.
 sigma_test = solver_batched(Rhs[:, 0:1])
 
-# solve for all the rhs in a vectorized fashion
+# Solve for all the RHS in a vectorized fashion.
 Sigma = solver_batched(Rhs)
 
-# compue the scattered field
+# Compute the scattered field.
 U_s = green_batched(Sigma)
 
-# perhaps do a video here with all the different directions
 plt.imshow(jnp.real(U_s[:, 1].reshape(n, m)))
 plt.show()
 
-# trying a much bigger problem
+# Trying a much bigger problem.
 start = time.time()
 n_angles = 100
 d_theta = jnp.pi * 2 / (n_angles)
@@ -153,12 +151,12 @@ U_i = jnp.exp(
 
 Rhs = -(omega**2) * nu.reshape((-1, 1)) * U_i
 
-# solve for all the rhs in a vectorized fashion
+# Solve for all the RHS in a vectorized fashion.
 Sigma = solver_batched(Rhs)
 
-# compue the scattered field
+# Compute the scattered field.
 U_s = green_batched(Sigma)
 
 end = time.time()
 
-print("overall time elapse was %d[s]" % (end - start))
+print("overall time elapsed was %d[s]" % (end - start))

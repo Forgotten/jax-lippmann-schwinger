@@ -1,56 +1,56 @@
-import context
-
-import matplotlib.pyplot as plt
-
-from jax import jit
-
-import jax.numpy as jnp
 import time
 
+import jax.numpy as jnp
+import matplotlib.pyplot as plt
+import jax
+
+import context
 import jax_ls
 
-# size of the domain in x and y
+Array = jax.Array
+
+# Size of the domain in x and y.
 ax = 1.0
 ay = 1.0
 
-# number of discretization points per dimension
+# Number of discretization points per dimension.
 n = 2**7
 m = n
 
-# we choose to have 4 points per wavelenght
+# We choose to have 4 points per wavelength.
 omega = 2 * jnp.pi * (n // 8)
 
-# grid spacing
+# Grid spacing.
 hx = 1 / (n - 1)
 
-sampling_radious = 1.0
+sampling_radius = 1.0
 n_angles = n
 
-# initialize the parameters
+# Initialize the parameters.
 params_nf = jax_ls.init_params_near_field(
-  ax, ay, n, m, sampling_radious, n_angles, omega
+  ax, ay, n, m, sampling_radius, n_angles, omega
 )
 
 
-# definition of the perturbation by the lense
-@jit
-def perturbation(x, y):
+# Definition of the perturbation by the lens.
+@jax.jit
+def perturbation(x: Array, y: Array) -> Array:
   return jnp.exp(-100 * (jnp.square(x) + jnp.square(y)))
 
 
-# we sample the perturbation
+# We sample the perturbation.
 nu = perturbation(params_nf.ls_params.X, params_nf.ls_params.Y)
 nu_vect = jnp.reshape(nu, (-1,))
 
-# starting the solution and the computation
+# Starting the solution and the computation.
 start = time.time()
 
 near_field = jax_ls.near_field_map(params_nf, nu_vect)
 
 end = time.time()
-print("overall time elapse was %e[s]" % (end - start))
+print("overall time elapsed was %e[s]" % (end - start))
 
-# ploting the near field map
+# Plotting the near field map.
 plt.figure(figsize=(10, 5))
 plt.subplot(1, 2, 1)
 plt.imshow(jnp.real(near_field))

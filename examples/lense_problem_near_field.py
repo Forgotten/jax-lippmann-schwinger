@@ -1,72 +1,70 @@
-import context
-
-import scipy as sp
-import matplotlib.pyplot as plt
-
-from jax import jit
-from jax import random
-import jax
-import jax.numpy as jnp
 import time
 
+import jax
+import jax.numpy as jnp
+import matplotlib.pyplot as plt
+import scipy as sp
+from jax import jit, random
+
+import context
 import jax_ls
 
+Array = jax.Array
 
 key = jax.random.PRNGKey(0)
 
-# size of the domain in x and y
+# Size of the domain in x and y.
 ax = 1.0
 ay = 1.0
 
-# number of discretization points per dimension
+# Number of discretization points per dimension.
 n = 2**7
 m = n
 
 hx = 1 / (n - 1)
 
-# we choose to have 6 points per wavelenght
+# We choose to have 6 points per wavelength.
 omega = 2 * jnp.pi * (n // 6)
 
-# initialize the parameters
+# Initialize the parameters.
 params = jax_ls.init_params(ax, ay, n, m, omega)
 
-# definition of the perturbation by the lense
 
-
+# Definition of the perturbation by the lens.
 @jit
-def perturbation(x, y):
+def perturbation(x: Array, y: Array) -> Array:
   return jnp.exp(-100 * (jnp.square(x) + jnp.square(y)))
 
 
-def green_function(r, omega):
+def green_function(r: Array, omega: float) -> Array:
   return (-1j / 4) * sp.special.hankel1(0, omega * r)
 
 
-# we sample the perturbation
+# We sample the perturbation.
 nu = perturbation(params.X, params.Y)
 nu_vect = jnp.reshape(nu, (-1,))
 
-# we choose the direction of the incident field
+# We choose the direction of the incident field.
 x_s = jnp.array([0, 1])
 
-# we initialize the incident field
+# We initialize the incident field.
 u_i = green_function(
   jnp.sqrt(jnp.square(params.X - x_s[0]) + jnp.square(params.Y - x_s[1])), omega
 )
 
-# we create the right hand side
+# We create the right hand side.
 rhs = -(omega**2) * nu * u_i
 
-# which is then reshaped
+# Which is then reshaped.
 f = jnp.reshape(rhs, (-1,))
 
-# trigger the compilation
+# Trigger the compilation.
 test = jax_ls.apply_lipp_schwin(params, nu_vect, f)
 
-# solve for the density u = G*sigma
+# Solve for the density u = G * sigma.
 sigma = jax_ls.ls_solver(params, nu_vect, f)
 
-# computing the scattered field from the density
+# Computing the scattered field from the density.
 u_s = jax_ls.apply_green_function(params, sigma)
 
 plt.figure(figsize=(10, 10))
@@ -96,15 +94,14 @@ plt.yticks([])
 
 plt.show()
 
-# sampling on a circle
-
-# we seek to sample the wavefield on the observation manifold
+# Sampling on a circle.
+# We seek to sample the wavefield on the observation manifold.
 start = time.time()
 n_angles = n
 d_theta = jnp.pi * 2 / (n_angles)
 theta = jnp.linspace(jnp.pi, 3 * jnp.pi - d_theta, n_angles)
-radious = 1.0
-X_s = radious * jnp.concatenate(
+radius = 1.0
+X_s = radius * jnp.concatenate(
   [
     jnp.cos(theta).reshape((n_angles, 1)),
     jnp.sin(theta).reshape((n_angles, 1)),
@@ -119,7 +116,7 @@ R = jnp.sqrt(
 
 U_i = green_function(R, omega)
 
-# trapezoidal rule
+# Trapezoidal rule.
 u_s_bdy = jnp.sum(U_i * sigma.reshape((-1, 1)), axis=0) * (hx**2)
 
 plt.plot(jnp.real(u_s_bdy))
