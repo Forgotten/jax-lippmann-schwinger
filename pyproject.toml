@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "jax-ls"
 version = "0.1.0"
@@ -15,6 +19,12 @@ dependencies = [
   "jaxlib",
   "flax",
 ]
+
+# Ship only the library.  Without this, flat-layout auto-discovery also picks up
+# `examples`, which would install a top-level module of that name into
+# site-packages.
+[tool.setuptools.packages.find]
+include = ["jax_ls*"]
 
 [tool.ruff]
 line-length = 80

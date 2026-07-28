@@ -13,15 +13,32 @@ Finally, we use BFGS (also provided by JAX) to solve the inverse problem, using 
 
 ## Installation
 
-### From Source
+Requires Python 3.10 or newer.
 
-Clone the repository and install it using `pip` in your environment:
+### With `pip`, straight from GitHub
+
+No clone needed — this is also what the Colab notebook uses:
+
+```bash
+pip install git+https://github.com/Forgotten/jax-lippmann-schwinger.git
+```
+
+### From a local clone
+
+For development, install in editable mode so that changes take effect immediately:
 
 ```bash
 git clone https://github.com/Forgotten/jax-lippmann-schwinger.git
 cd jax-lippmann-schwinger
 pip install -e .
 ```
+
+Either way `pip` pulls in the dependencies (`numpy`, `scipy`, `jax`, `jaxlib`, `flax`). The
+package is not published on PyPI, so `pip install jax-ls` will *not* work.
+
+This installs the CPU build of JAX. To run on a GPU, install the matching JAX wheel
+afterwards, following the
+[JAX installation guide](https://docs.jax.dev/en/latest/installation.html).
 
 ### Running Tests
 

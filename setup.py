@@ -15,8 +15,16 @@ setup(
   author_email="zepedanunez@wisc.edu",  # and your email too
   url="https://github.com/Forgotten/jax-lippmann-schwinger",
   license=license,
-  install_requires=["numpy", "scipy", "jax", "flax"],  # add extra requirements here
-  packages=find_packages(),
+  install_requires=[
+    "numpy",
+    "scipy",
+    "jax",
+    "jaxlib",
+    "flax",
+  ],  # add extra requirements here
+  # Ship only the library: a bare find_packages() also picks up `examples`,
+  # which would install a top-level module of that name into site-packages.
+  packages=find_packages(include=["jax_ls*"]),
   classifiers=[
     "Programming Language :: Python :: 3",
     "License :: MIT License",
