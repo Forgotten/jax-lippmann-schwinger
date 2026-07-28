@@ -78,7 +78,5 @@ This repository is organized as follows:
 - `tests/`: contains several tests to check that the code generates the correct solution, including adjoint and gradient tests.
 - `examples/`: contains a few examples of how to use the code.
 - `notebooks/`: contains notebooks showcasing how the code solves the equation and the minimization problem.
-- `docs/`: contains a study of the code ([`code_study.md`](docs/code_study.md)) and the design
-  for a wide-band inverse solver ([`wideband_design.md`](docs/wideband_design.md)).
 
  

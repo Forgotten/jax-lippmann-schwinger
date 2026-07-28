@@ -12,6 +12,11 @@ license = { file = "LICENSE" }
 authors = [
   { name = "Leonardo Zepeda-Núñez", email = "lzepeda@melix.org" }
 ]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+]
 dependencies = [
   "numpy",
   "scipy",
@@ -19,6 +24,9 @@ dependencies = [
   "jaxlib",
   "flax",
 ]
+
+[project.urls]
+Homepage = "https://github.com/Forgotten/jax-lippmann-schwinger"
 
 # Ship only the library.  Without this, flat-layout auto-discovery also picks up
 # `examples`, which would install a top-level module of that name into
