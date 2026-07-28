@@ -88,9 +88,7 @@ class NearFieldParams:
       that samples the scattered field at the receivers.
   """
 
-  # Lippmann-Schwinger parameters (grid, kernel, frequency, spacings).
   ls_params: LippSchwinParams
-  # Green's function in space.
   G_sample: Array
 
   # The grid spacings live on `ls_params`; exposing them here keeps the call
@@ -195,38 +193,38 @@ def _solve_all_sources_adj(
   return solve(rhs)
 
 
-def _apply_green_all(params: NearFieldParams, Sigma: Array) -> Array:
-  """Apply the Green's function to every column of `Sigma`."""
+def _apply_green_all(params: NearFieldParams, sigma: Array) -> Array:
+  """Apply the Green's function to every column of `sigma`."""
   green = vmap(
     partial(apply_green_function, params.ls_params), in_axes=1, out_axes=1
   )
-  return green(Sigma)
+  return green(sigma)
 
 
-def _apply_conj_green_all(params: NearFieldParams, Sigma: Array) -> Array:
-  """Apply the conjugate Green's function to every column of `Sigma`."""
+def _apply_conj_green_all(params: NearFieldParams, sigma: Array) -> Array:
+  """Apply the conjugate Green's function to every column of `sigma`."""
   green = vmap(
     partial(apply_conj_green_function, params.ls_params), in_axes=1, out_axes=1
   )
-  return green(Sigma)
+  return green(sigma)
 
 
-def _total_field(params: NearFieldParams, Sigma: Array) -> Array:
+def _total_field(params: NearFieldParams, sigma: Array) -> Array:
   """Total field (incident plus scattered) for every source."""
-  return _apply_green_all(params, Sigma) + params.G_sample
+  return _apply_green_all(params, sigma) + params.G_sample
 
 
-def _sample_near_field(params: NearFieldParams, Sigma: Array) -> Array:
+def _sample_near_field(params: NearFieldParams, sigma: Array) -> Array:
   """Sample the scattered field on the observation manifold.
 
   The result is indexed (source, receiver).  The minus sign is the
   ``G_sample = -G`` convention described in the module docstring.
   """
-  return -(Sigma.T @ params.G_sample) * params.cell_area
+  return -(sigma.T @ params.G_sample) * params.cell_area
 
 
 def _adjoint_apply(
-  params: NearFieldParams, nu_vect: Array, Sigma: Array, cotangent: Array
+  params: NearFieldParams, nu_vect: Array, sigma: Array, cotangent: Array
 ) -> Array:
   """Apply the Hermitian adjoint J^H to a cotangent matrix.
 
@@ -248,7 +246,7 @@ def _adjoint_apply(
   Args:
     params: Configuration for the near-field map.
     nu_vect: Contrast vector.
-    Sigma: Forward densities, one column per source.
+    sigma: Forward densities, one column per source.
     cotangent: Cotangent, of shape (n_theta, n_theta).
 
   Returns:
@@ -256,15 +254,15 @@ def _adjoint_apply(
   """
   omega = params.ls_params.omega
 
-  u_total = _total_field(params, Sigma)
+  u_total = _total_field(params, sigma)
 
   # Incident field of the adjoint problem.
   u_adj_incident = (omega**2) * (jnp.conj(params.G_sample) @ cotangent)
 
   rhs_adjoint = -(omega**2) * u_adj_incident * nu_vect.reshape((-1, 1))
-  Sigma_adj = _solve_all_sources_adj(params, nu_vect, rhs_adjoint)
+  sigma_adj = _solve_all_sources_adj(params, nu_vect, rhs_adjoint)
 
-  u_adj = _apply_conj_green_all(params, Sigma_adj) + u_adj_incident
+  u_adj = _apply_conj_green_all(params, sigma_adj) + u_adj_incident
 
   return -jnp.sum(jnp.conj(u_total) * u_adj, axis=1) * params.cell_area
 
@@ -285,8 +283,8 @@ def near_field_map(params: NearFieldParams, nu_vect: Array) -> Array:
   Returns:
     The near field, of shape (n_theta, n_theta), indexed (source, receiver).
   """
-  Sigma = _solve_all_sources(params, nu_vect, _incident_rhs(params, nu_vect))
-  return _sample_near_field(params, Sigma)
+  sigma = _solve_all_sources(params, nu_vect, _incident_rhs(params, nu_vect))
+  return _sample_near_field(params, sigma)
 
 
 @partial(custom_jvp, nondiff_argnums=(0,))
@@ -305,8 +303,8 @@ def near_field_map_forward_mode(
   Returns:
     The near field, flattened to shape (n_theta * n_theta,).
   """
-  Sigma = _solve_all_sources(params, nu_vect, _incident_rhs(params, nu_vect))
-  return _sample_near_field(params, Sigma).reshape((-1,))
+  sigma = _solve_all_sources(params, nu_vect, _incident_rhs(params, nu_vect))
+  return _sample_near_field(params, sigma).reshape((-1,))
 
 
 @near_field_map_forward_mode.defjvp
@@ -333,17 +331,17 @@ def near_field_map_forward_mode_jvp(
   (nu_vect,) = primals
   (delta_nu_vect,) = tangents
 
-  Sigma = _solve_all_sources(params, nu_vect, _incident_rhs(params, nu_vect))
-  u_total = _total_field(params, Sigma)
+  sigma = _solve_all_sources(params, nu_vect, _incident_rhs(params, nu_vect))
+  u_total = _total_field(params, sigma)
 
   rhs_tangent = (
     -(params.ls_params.omega**2) * delta_nu_vect.reshape((-1, 1)) * u_total
   )
-  delta_Sigma = _solve_all_sources(params, nu_vect, rhs_tangent)
+  delta_sigma = _solve_all_sources(params, nu_vect, rhs_tangent)
 
   return (
-    _sample_near_field(params, Sigma).reshape((-1,)),
-    _sample_near_field(params, delta_Sigma).reshape((-1,)),
+    _sample_near_field(params, sigma).reshape((-1,)),
+    _sample_near_field(params, delta_sigma).reshape((-1,)),
   )
 
 
@@ -364,16 +362,16 @@ def near_field_map_reverse_mode(
   Returns:
     The near field, flattened to shape (n_theta * n_theta,).
   """
-  Sigma = _solve_all_sources(params, nu_vect, _incident_rhs(params, nu_vect))
-  return _sample_near_field(params, Sigma).reshape((-1,))
+  sigma = _solve_all_sources(params, nu_vect, _incident_rhs(params, nu_vect))
+  return _sample_near_field(params, sigma).reshape((-1,))
 
 
 def near_field_map_reverse_mode_fwd(
   params: NearFieldParams, nu_vect: Array
 ) -> tuple[Array, tuple[Array, Array]]:
   """Forward pass of the reverse-mode rule."""
-  Sigma = _solve_all_sources(params, nu_vect, _incident_rhs(params, nu_vect))
-  return _sample_near_field(params, Sigma).reshape((-1,)), (Sigma, nu_vect)
+  sigma = _solve_all_sources(params, nu_vect, _incident_rhs(params, nu_vect))
+  return _sample_near_field(params, sigma).reshape((-1,)), (sigma, nu_vect)
 
 
 def near_field_map_reverse_mode_bwd(
@@ -386,10 +384,10 @@ def near_field_map_reverse_mode_bwd(
   ``J^T w = conj(J^H conj(w))``, so the Hermitian adjoint is reused with the
   cotangent conjugated on the way in and the result conjugated on the way out.
   """
-  Sigma, nu_vect = residuals
+  sigma, nu_vect = residuals
   n_theta = params.n_theta
   adjoint = _adjoint_apply(
-    params, nu_vect, Sigma, jnp.conj(cotangent).reshape((n_theta, n_theta))
+    params, nu_vect, sigma, jnp.conj(cotangent).reshape((n_theta, n_theta))
   )
   return (jnp.conj(adjoint),)
 
@@ -441,10 +439,10 @@ def born_adjoint(
   Returns:
     J^H w, of shape (n_dof,).
   """
-  Sigma = _solve_all_sources(params, nu_vect, _incident_rhs(params, nu_vect))
+  sigma = _solve_all_sources(params, nu_vect, _incident_rhs(params, nu_vect))
   n_theta = params.n_theta
   return _adjoint_apply(
-    params, nu_vect, Sigma, cotangent.reshape((n_theta, n_theta))
+    params, nu_vect, sigma, cotangent.reshape((n_theta, n_theta))
   )
 
 
@@ -465,8 +463,8 @@ def near_field_l2_loss(
   Returns:
     The scalar L2 loss 0.5 * ||F[nu] - u_data||^2.
   """
-  Sigma = _solve_all_sources(params, nu_vect, _incident_rhs(params, nu_vect))
-  residual = _sample_near_field(params, Sigma) - u_data
+  sigma = _solve_all_sources(params, nu_vect, _incident_rhs(params, nu_vect))
+  residual = _sample_near_field(params, sigma) - u_data
   return 0.5 * jnp.sum(jnp.abs(residual) ** 2)
 
 
@@ -474,10 +472,10 @@ def near_field_l2_loss_fwd(
   params: NearFieldParams, u_data: Array, nu_vect: Array
 ) -> tuple[Array, tuple[Array, Array, Array]]:
   """Forward pass of the L2 loss VJP."""
-  Sigma = _solve_all_sources(params, nu_vect, _incident_rhs(params, nu_vect))
-  residual = _sample_near_field(params, Sigma) - u_data
+  sigma = _solve_all_sources(params, nu_vect, _incident_rhs(params, nu_vect))
+  residual = _sample_near_field(params, sigma) - u_data
   loss = 0.5 * jnp.sum(jnp.abs(residual) ** 2)
-  return loss, (Sigma, residual, nu_vect)
+  return loss, (sigma, residual, nu_vect)
 
 
 def near_field_l2_loss_bwd(
@@ -491,9 +489,9 @@ def near_field_l2_loss_bwd(
   The gradient of a real-valued misfit is the real part of ``J^H`` applied to
   the residual, so the same adjoint solve serves both.
   """
-  Sigma, residual, nu_vect = residuals
+  sigma, residual, nu_vect = residuals
   return (
-    cotangent * jnp.real(_adjoint_apply(params, nu_vect, Sigma, residual)),
+    cotangent * jnp.real(_adjoint_apply(params, nu_vect, sigma, residual)),
   )
 
 

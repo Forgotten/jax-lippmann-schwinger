@@ -125,15 +125,10 @@ class LippSchwinParams:
     hy: Grid spacing in y, equal to ay / m.
   """
 
-  # Truncated Green's function in Fourier domain.
   GFFT: Array
-  # Frequency.
   omega: float
-  # Grid in x.
   X: Array
-  # Grid in y.
   Y: Array
-  # Grid spacings.  Static: they are geometry, not data to be differentiated.
   hx: float = struct.field(pytree_node=False)
   hy: float = struct.field(pytree_node=False)
 
