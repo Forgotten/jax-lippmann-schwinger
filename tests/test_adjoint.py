@@ -1,67 +1,82 @@
-"""Tests for the adjoint consistency of the near-field operator.
+"""Adjoint consistency of the near-field operator at higher resolution.
 
-Verifies that <J δν, w> ≈ <δν, J* w> for random tangent/cotangent
-vectors, using both the automatic (JAX linearize) and custom VJP
-implementations.
+`test_derivatives.py` pins the adjoint identities at 64x64; this file repeats the
+Hermitian check at 128x128, where the discretisation error is smaller, with a
+tolerance tied to the grid spacing.
 """
 
-import jax_ls
 from functools import partial
-from jax import jit, random
-import jax.numpy as jnp
-import pytest
-import jax
 
-# Enable 64-bit support
+
+import jax
+import jax.numpy as jnp
+from jax import jit, random
+
+import jax_ls
+
 jax.config.update("jax_enable_x64", True)
 
 
 class TestAdjoint:
-  """Adjoint-test for near_field_map_vect_vjp."""
-
-  # The error tolerance is now computed dynamically based on the grid spacing
+  """Adjoint test for `born_adjoint` against the forward-mode Jacobian."""
 
   def test_adjoint_consistency(
-    self, params_nf_large, shifted_perturbation_fn, delta_perturbation_fn, rng_key
+    self, params_nf_large, shifted_perturbation_fn, rng_key
   ):
-    """<J δν, w> should equal <δν, J* w> up to discretisation error."""
+    """<w, J t> should equal <J^H w, t> up to discretisation error."""
     params_nf = params_nf_large
+    ls = params_nf.ls_params
 
-    # sample perturbations on the grid
-    nu = shifted_perturbation_fn(params_nf.ls_params.X, params_nf.ls_params.Y)
-    nu_vect = jnp.reshape(nu, (-1,))
+    nu_vect = jnp.reshape(shifted_perturbation_fn(ls.X, ls.Y), (-1,))
 
-    delta_nu = delta_perturbation_fn(params_nf.ls_params.X, params_nf.ls_params.Y)
-    delta_nu_vect = jnp.reshape(delta_nu, (-1,))
+    near_field = jit(partial(jax_ls.near_field_map_forward_mode, params_nf))
+    _, jacobian = jax.linearize(near_field, nu_vect)
 
-    # forward near-field (automatic JVP path)
-    near_field = jit(partial(jax_ls.near_field_map_vect, params_nf))
-    y, J = jax.linearize(near_field, nu_vect)
+    key1, key2 = random.split(rng_key)
+    tangent = random.normal(key1, shape=(nu_vect.shape[0],))
+    cotangent = random.normal(
+      key2, shape=(params_nf.n_theta**2,)
+    ) + 1j * random.normal(key2, shape=(params_nf.n_theta**2,))
 
-    # custom VJP path
-    near_field_vjp = jit(partial(jax_ls.near_field_map_vect_vjp, params_nf))
-    primals, J_star = jax.vjp(near_field_vjp, nu_vect)
+    lhs = jnp.sum(jnp.conj(cotangent) * jacobian(tangent))
+    rhs = jnp.sum(
+      jnp.conj(jax_ls.born_adjoint(params_nf, nu_vect, cotangent)) * tangent
+    )
+    err = float(jnp.abs(lhs - rhs) / jnp.abs(lhs))
 
-    # random cotangent / tangent
-    key1, key2, key3 = random.split(rng_key, 3)
-    delta_u_nf = J(jax.random.normal(key1, shape=(y.shape[0],)))
-    rand_cotgnt = jax.random.normal(
-      key2, shape=(delta_u_nf.shape[0],)
-    ) + 1j * jax.random.normal(key2, shape=(delta_u_nf.shape[0],))
-    rand_tgnt = jax.random.normal(key3, shape=(delta_u_nf.shape[0],))
-
-    # apply J (linearised) and J* (adjoint)
-    delta_u_nf = J(rand_tgnt)
-    adjoint = J_star(rand_cotgnt)
-
-    # adjoint identity check
-    lhs = jnp.sum(jnp.conj(rand_cotgnt) * delta_u_nf)
-    rhs = jnp.sum(jnp.conj(adjoint[0]) * rand_tgnt)
-    err = jnp.abs(lhs - rhs) / jnp.abs(lhs)
-
-    # Compute dynamic tolerance: GMRES baseline error + O(hx) discretisation mismatch
+    # GMRES baseline error plus an O(hx) discretisation mismatch.
     tol = 1e-4 + float(params_nf.hx) * 0.2
-    assert float(err) < tol, (
-      f"Adjoint test error {float(err):.2e} exceeds dynamic tolerance "
-      f"{tol:.2e} (based on hx={float(params_nf.hx):.3f})"
+    assert err < tol, (
+      f"Adjoint test error {err:.2e} exceeds dynamic tolerance {tol:.2e} "
+      f"(based on hx={float(params_nf.hx):.4f})"
+    )
+
+  def test_reverse_mode_consistency(
+    self, params_nf_large, shifted_perturbation_fn, rng_key
+  ):
+    """The reverse-mode rule must transpose the same Jacobian."""
+    params_nf = params_nf_large
+    ls = params_nf.ls_params
+
+    nu_vect = jnp.reshape(shifted_perturbation_fn(ls.X, ls.Y), (-1,))
+
+    forward = jit(partial(jax_ls.near_field_map_forward_mode, params_nf))
+    reverse = jit(partial(jax_ls.near_field_map_reverse_mode, params_nf))
+
+    _, jacobian = jax.linearize(forward, nu_vect)
+    _, vjp_fn = jax.vjp(reverse, nu_vect)
+
+    key1, key2 = random.split(rng_key)
+    tangent = random.normal(key1, shape=(nu_vect.shape[0],))
+    cotangent = random.normal(
+      key2, shape=(params_nf.n_theta**2,)
+    ) + 1j * random.normal(key2, shape=(params_nf.n_theta**2,))
+
+    lhs = jnp.sum(cotangent * jacobian(tangent))
+    rhs = jnp.sum(vjp_fn(cotangent)[0] * tangent)
+    err = float(jnp.abs(lhs - rhs) / jnp.abs(lhs))
+
+    tol = 1e-4 + float(params_nf.hx) * 0.2
+    assert err < tol, (
+      f"Transpose test error {err:.2e} exceeds dynamic tolerance {tol:.2e}"
     )
