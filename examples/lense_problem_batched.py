@@ -6,7 +6,7 @@ import jax.numpy as jnp
 import matplotlib.pyplot as plt
 from jax import jit, vmap
 
-import context
+import context  # noqa: F401
 import jax_ls
 
 key = jax.random.PRNGKey(0)
@@ -107,7 +107,7 @@ Rhs = -(omega**2) * nu.reshape((-1, 1)) * U_i
 
 # Now we want to resolve this problem in a batched form.
 
-solver_jit = jit(partial(jax_ls.ls_solver_batched, params, nu_vect))
+solver_jit = jit(partial(jax_ls.ls_solver, params, nu_vect))
 
 solver_batched = vmap(solver_jit, in_axes=1, out_axes=1)
 

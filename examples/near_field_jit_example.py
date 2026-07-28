@@ -4,7 +4,7 @@ import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import jax
 
-import context
+import context  # noqa: F401
 import jax_ls
 
 Array = jax.Array
@@ -17,11 +17,8 @@ ay = 1.0
 n = 2**7
 m = n
 
-# We choose to have 4 points per wavelength.
+# We choose to have 8 points per wavelength.
 omega = 2 * jnp.pi * (n // 8)
-
-# Grid spacing.
-hx = 1 / (n - 1)
 
 sampling_radius = 1.0
 n_angles = n

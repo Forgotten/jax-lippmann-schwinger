@@ -3,10 +3,9 @@ import time
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
-import scipy as sp
-from jax import jit, random
+from jax import jit
 
-import context
+import context  # noqa: F401
 import jax_ls
 
 Array = jax.Array
@@ -21,8 +20,6 @@ ay = 1.0
 n = 2**7
 m = n
 
-hx = 1 / (n - 1)
-
 # We choose to have 6 points per wavelength.
 omega = 2 * jnp.pi * (n // 6)
 
@@ -36,10 +33,6 @@ def perturbation(x: Array, y: Array) -> Array:
   return jnp.exp(-100 * (jnp.square(x) + jnp.square(y)))
 
 
-def green_function(r: Array, omega: float) -> Array:
-  return (-1j / 4) * sp.special.hankel1(0, omega * r)
-
-
 # We sample the perturbation.
 nu = perturbation(params.X, params.Y)
 nu_vect = jnp.reshape(nu, (-1,))
@@ -48,7 +41,7 @@ nu_vect = jnp.reshape(nu, (-1,))
 x_s = jnp.array([0, 1])
 
 # We initialize the incident field.
-u_i = green_function(
+u_i = -jax_ls.green_function(
   jnp.sqrt(jnp.square(params.X - x_s[0]) + jnp.square(params.Y - x_s[1])), omega
 )
 
@@ -114,10 +107,10 @@ R = jnp.sqrt(
   + jnp.square(params.Y.reshape((-1, 1)) - X_s[:, 1].reshape((1, -1)))
 )
 
-U_i = green_function(R, omega)
+U_i = -jax_ls.green_function(R, omega)
 
 # Trapezoidal rule.
-u_s_bdy = jnp.sum(U_i * sigma.reshape((-1, 1)), axis=0) * (hx**2)
+u_s_bdy = jnp.sum(U_i * sigma.reshape((-1, 1)), axis=0) * params.cell_area
 
 plt.plot(jnp.real(u_s_bdy))
 plt.show()

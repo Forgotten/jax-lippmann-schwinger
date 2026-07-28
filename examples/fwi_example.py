@@ -7,7 +7,7 @@ import jax.scipy.optimize
 import matplotlib.pyplot as plt
 from jax import jit
 
-import context
+import context  # noqa: F401
 import jax_ls
 
 # Size of the domain in x and y.
@@ -18,11 +18,8 @@ ay = 1.0
 n = 2**6
 m = n
 
-# We choose to have 4 points per wavelength.
+# We choose to have 8 points per wavelength.
 omega = 2 * jnp.pi * (n // 8)
-
-# Grid spacing.
-hx = 1 / (n - 1)
 
 sampling_radius = 1.0
 n_angles = n
@@ -46,7 +43,7 @@ nu = perturbation(params_nf.ls_params.X, params_nf.ls_params.Y)
 nu_vect = jnp.reshape(nu, (-1,))
 
 # Jitting the near field map (vectorized) with the custom VJP.
-near_field_vjp = jit(partial(jax_ls.near_field_map_vect_vjp, params_nf))
+near_field_vjp = jit(partial(jax_ls.near_field_map_reverse_mode, params_nf))
 
 # Reference wavefield (i.e., data).
 near_field_data_v2 = near_field_vjp(nu_vect)

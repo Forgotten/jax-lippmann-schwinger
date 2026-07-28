@@ -17,6 +17,7 @@ build/
 # IDEs and environments
 .idea/
 .vscode/
+.claude/
 .env
 .venv
 env/

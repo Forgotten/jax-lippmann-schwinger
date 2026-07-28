@@ -4,10 +4,9 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
-import scipy as sp
 from jax import jit, vmap
 
-import context
+import context  # noqa: F401
 import jax_ls
 
 Array = jax.Array
@@ -22,12 +21,10 @@ ay = 1.0
 n = 2**7
 m = n
 
-# We choose to have 4 points per wavelength.
+# We choose to have 8 points per wavelength.
 omega = 2 * jnp.pi * (n // 8)
 
 # Grid spacing.
-hx = 1 / (n - 1)
-
 # Initialize the parameters.
 params = jax_ls.init_params(ax, ay, n, m, omega)
 
@@ -38,17 +35,13 @@ def perturbation(x: Array, y: Array) -> Array:
   return jnp.exp(-100 * (jnp.square(x) + jnp.square(y)))
 
 
-def green_function(r: Array, omega: float) -> Array:
-  return (-1j / 4) * sp.special.hankel1(0, omega * r)
-
-
 # We sample the perturbation.
 nu = perturbation(params.X, params.Y)
 nu_vect = jnp.reshape(nu, (-1,))
 
 # Defining the batched transformations.
 solver_batched = vmap(
-  partial(jax_ls.ls_solver_batched, params, nu_vect),
+  partial(jax_ls.ls_solver, params, nu_vect),
   in_axes=1,
   out_axes=1,
 )
@@ -82,7 +75,7 @@ R = jnp.sqrt(
   + jnp.square(params.Y.reshape((-1, 1)) - X_s[:, 1].reshape((1, -1)))
 )
 
-U_i = green_function(R, omega)
+U_i = -jax_ls.green_function(R, omega)
 
 Rhs = -(omega**2) * nu.reshape((-1, 1)) * U_i
 
@@ -95,7 +88,7 @@ U_s = green_batched(Sigma)
 end = time.time()
 print("overall time elapsed was %d[s]" % (end - start))
 
-near_field = hx**2 * (
+near_field = params.cell_area * (
   Sigma.T.reshape((n_angles, -1)) @ U_i.reshape(-1, n_angles)
 )
 

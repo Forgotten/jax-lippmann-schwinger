@@ -3,7 +3,7 @@ import jax.numpy as jnp
 import matplotlib.pyplot as plt
 from jax import jit
 
-import context
+import context  # noqa: F401
 import jax_ls
 
 key = jax.random.PRNGKey(0)
