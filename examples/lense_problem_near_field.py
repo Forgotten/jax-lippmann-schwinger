@@ -34,8 +34,8 @@ def perturbation(x: Array, y: Array) -> Array:
 
 
 # We sample the perturbation.
-nu = perturbation(params.X, params.Y)
-nu_vect = jnp.reshape(nu, (-1,))
+nu_vect = params.domain.sample(perturbation)
+nu = params.domain.grid(nu_vect)
 
 # We choose the direction of the incident field.
 x_s = jnp.array([0, 1])
@@ -91,23 +91,12 @@ plt.show()
 # We seek to sample the wavefield on the observation manifold.
 start = time.time()
 n_angles = n
-d_theta = jnp.pi * 2 / (n_angles)
-theta = jnp.linspace(jnp.pi, 3 * jnp.pi - d_theta, n_angles)
 radius = 1.0
-X_s = radius * jnp.concatenate(
-  [
-    jnp.cos(theta).reshape((n_angles, 1)),
-    jnp.sin(theta).reshape((n_angles, 1)),
-  ],
-  axis=1,
-)
 
-R = jnp.sqrt(
-  jnp.square(params.X.reshape((-1, 1)) - X_s[:, 0].reshape((1, -1)))
-  + jnp.square(params.Y.reshape((-1, 1)) - X_s[:, 1].reshape((1, -1)))
-)
-
-U_i = -jax_ls.green_function(R, omega)
+# `SamplingManifold` builds the circle and the sampling kernel -- minus the
+# Green's function between the grid and the observation points -- in one step.
+manifold = jax_ls.SamplingManifold.circle(radius, n_angles)
+U_i = manifold.sampling_kernel(params.domain, omega)
 
 # Trapezoidal rule.
 u_s_bdy = jnp.sum(U_i * sigma.reshape((-1, 1)), axis=0) * params.cell_area
