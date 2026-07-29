@@ -27,125 +27,109 @@ with the operator.
 
 from functools import partial
 
-import numpy as np
-import scipy as sp
-
 import jax
 import jax.numpy as jnp
 from jax import custom_jvp, jit
 
 from flax import struct
 
+from .domain import Domain
+from .kernels import (
+  DEFAULT_PAD,
+  DEFAULT_TRUNCATION_FACTOR,
+  SINGULARITY_RTOL,
+  GreenKernel,
+  fourier_green_function,
+)
+
 Array = jax.Array
 
-# Relative tolerance used to detect the removable singularity |s| == omega of
-# the truncated kernel.  See `fourier_green_function`.
-SINGULARITY_RTOL = 1e-8
-
-# Default zero-padding factor used for the aperiodic FFT convolution.
-DEFAULT_PAD = 4
-
-# Default truncation radius, as a multiple of the diameter of the domain.
-DEFAULT_TRUNCATION_FACTOR = 1.05
-
-
-def fourier_green_function(L: float, k: float, s: Array) -> Array:
-  """Evaluate the truncated Green's function in the Fourier domain.
-
-  This is the Fourier transform of the free-space Green's function of the
-  Helmholtz operator truncated to a disc of radius ``L``,
-
-    Ghat_L(s) = N(s) / (s^2 - k^2),
-
-    N(s) = 1 + (i pi / 2) L s H1_0(L k) J_1(L s)
-             - (i pi / 2) L k H1_1(L k) J_0(L s),
-
-  where ``H1_p`` is the Hankel function of the first kind and ``J_p`` the Bessel
-  function of the first kind.
-
-  ``N`` vanishes at ``|s| = k`` (a consequence of the Wronskian identity
-  ``J_0(z) Y_1(z) - J_1(z) Y_0(z) = -2 / (pi z)``), so the quotient has a
-  *removable* singularity there.  Evaluating the quotient directly computes
-  ``0 / 0``, which is not a rare edge case: the mode set of the padded grid
-  contains ``|s| = k`` exactly whenever ``omega`` is chosen as a fixed number of
-  points per wavelength.  Near ``|s| = k`` the quotient also loses accuracy to
-  cancellation.  Both are avoided by switching to the limit
-
-    lim_{|s| -> k} Ghat_L(s) = (i pi L^2 / 4) [ H1_0(Lk) J_0(Lk)
-                                              + H1_1(Lk) J_1(Lk) ]
-
-  whenever ``|s^2 - k^2| <= SINGULARITY_RTOL * k^2``.
-
-  Args:
-    L: The truncation radius.
-    k: The wavenumber (omega).
-    s: The Fourier frequency variable.
-
-  Returns:
-    The transformed Green's function evaluated at s, as a numpy array.
-  """
-  s = np.asarray(s, dtype=float)
-  k = float(k)
-
-  hankel_0, hankel_1 = (
-    sp.special.hankel1(0, L * k),
-    sp.special.hankel1(1, L * k),
-  )
-
-  numerator = (
-    1
-    + (1j * np.pi / 2 * L * s) * hankel_0 * sp.special.jv(1, L * s)
-    - (1j * np.pi / 2 * L * k) * hankel_1 * sp.special.jv(0, L * s)
-  )
-  denominator = np.square(s) - np.square(k)
-
-  # Value of the quotient at the removable singularity, by L'Hopital's rule.
-  limit = (1j * np.pi * L**2 / 4) * (
-    hankel_0 * sp.special.jv(0, L * k) + hankel_1 * sp.special.jv(1, L * k)
-  )
-
-  singular = np.abs(denominator) <= SINGULARITY_RTOL * np.square(k)
-  # The unused branch of `where` is still evaluated, so keep it finite.
-  safe_denominator = np.where(singular, 1.0, denominator)
-
-  return np.where(singular, limit, numerator / safe_denominator)
+__all__ = [
+  "DEFAULT_PAD",
+  "DEFAULT_TRUNCATION_FACTOR",
+  "SINGULARITY_RTOL",
+  "Domain",
+  "GreenKernel",
+  "LippSchwinParams",
+  "apply_conj_green_function",
+  "apply_green_function",
+  "apply_lipp_schwin",
+  "apply_lipp_schwin_adj",
+  "fourier_green_function",
+  "init_params",
+  "ls_solver",
+  "ls_solver_adj",
+  "ls_solver_batched",
+  "ls_solver_batched_adj",
+  "ls_solver_batched_sigma",
+  "ls_solver_field",
+  "ls_solver_u",
+]
 
 
 @struct.dataclass
 class LippSchwinParams:
-  """Parameters for the Lippmann-Schwinger solver.
+  """Parameters for the Lippmann-Schwinger solver at one frequency.
+
+  A thin composition of a `Domain` (pure geometry, no array leaves) and a
+  `GreenKernel` (the frequency-dependent part).  The grid coordinates and
+  spacings are exposed as properties that read through to the domain, so there
+  is exactly one definition of the grid convention -- see `jax_ls.domain`.
 
   Attributes:
-    GFFT: The truncated Green's function in the Fourier domain, of shape
-      (pad * m, pad * n).
+    kernel: The truncated Green's kernel, which carries the domain.
     omega: The angular frequency of the wavefield.
-    X: The x-coordinates of the computational grid, of shape (m, n).
-    Y: The y-coordinates of the computational grid, of shape (m, n).
-    hx: Grid spacing in x, equal to ax / n.
-    hy: Grid spacing in y, equal to ay / m.
   """
 
-  GFFT: Array
+  kernel: GreenKernel
   omega: float
-  X: Array
-  Y: Array
-  hx: float = struct.field(pytree_node=False)
-  hy: float = struct.field(pytree_node=False)
+
+  # -- geometry, read through to the domain --------------------------------
+  @property
+  def domain(self) -> Domain:
+    """The computational grid."""
+    return self.kernel.domain
+
+  @property
+  def X(self) -> Array:
+    """The x-coordinates of the computational grid, of shape (m, n)."""
+    return self.domain.X
+
+  @property
+  def Y(self) -> Array:
+    """The y-coordinates of the computational grid, of shape (m, n)."""
+    return self.domain.Y
+
+  @property
+  def hx(self) -> float:
+    """Grid spacing in x, equal to ax / n."""
+    return self.domain.hx
+
+  @property
+  def hy(self) -> float:
+    """Grid spacing in y, equal to ay / m."""
+    return self.domain.hy
 
   @property
   def shape(self) -> tuple[int, int]:
     """Shape (m, n) of the computational grid."""
-    return self.X.shape
+    return self.domain.shape
 
   @property
   def n_dof(self) -> int:
     """Number of degrees of freedom on the grid."""
-    return self.X.size
+    return self.domain.n_dof
 
   @property
   def cell_area(self) -> float:
     """Quadrature weight of one grid cell."""
-    return self.hx * self.hy
+    return self.domain.cell_area
+
+  # -- kernel --------------------------------------------------------------
+  @property
+  def GFFT(self) -> Array:
+    """The truncated Green's function in the Fourier domain."""
+    return self.kernel.ghat
 
 
 def init_params(
@@ -159,9 +143,13 @@ def init_params(
 ) -> LippSchwinParams:
   """Initialize the parameters for the Lippmann-Schwinger solver.
 
-  The grid follows the periodic convention described in the module docstring:
-  ``n`` points of spacing ``ax / n`` covering ``[-ax/2, ax/2)``, and likewise in
-  y.  Rectangular domains are supported: the padded periods are ``pad * ax`` and
+  Convenience wrapper over `Domain` and `GreenKernel.create`; equivalent to
+
+    LippSchwinParams(GreenKernel.create(Domain(ax, ay, n, m), omega), omega)
+
+  The grid follows the periodic convention described in `jax_ls.domain`: ``n``
+  points of spacing ``ax / n`` covering ``[-ax/2, ax/2)``, and likewise in y.
+  Rectangular domains are supported: the padded periods are ``pad * ax`` and
   ``pad * ay`` independently.
 
   Args:
@@ -181,57 +169,11 @@ def init_params(
     ValueError: If the grid is degenerate, or if the truncation radius and the
       padding are incompatible with the size of the domain.
   """
-  if n < 2 or m < 2:
-    raise ValueError(
-      f"the grid must have at least 2 points per axis, got {(n, m)}"
-    )
-  if pad < 2:
-    raise ValueError(f"the padding factor must be at least 2, got {pad}")
-
-  hx, hy = ax / n, ay / m
-
-  # Periodic grid: no duplicated endpoint, spacing exactly ax / n.
-  x = -ax / 2 + hx * jnp.arange(n)
-  y = -ay / 2 + hy * jnp.arange(m)
-  X, Y = jnp.meshgrid(x, y)
-
-  diameter = float(np.hypot(ax, ay))
-  L = (
-    DEFAULT_TRUNCATION_FACTOR * diameter
-    if truncation_radius is None
-    else float(truncation_radius)
+  domain = Domain(ax=ax, ay=ay, n=n, m=m)
+  kernel = GreenKernel.create(
+    domain, omega, pad=pad, truncation_radius=truncation_radius
   )
-
-  # The truncated kernel must agree with the free-space kernel on every pair of
-  # points of the domain.
-  if L < diameter:
-    raise ValueError(
-      f"truncation radius {L:.4g} is smaller than the diameter of the domain "
-      f"{diameter:.4g}; the truncated kernel would not represent the volume "
-      "potential"
-    )
-  # The periodic convolution on the padded box must not alias: the nearest
-  # periodic image has to fall outside the support of the truncated kernel.
-  for length, label in ((ax, "ax"), (ay, "ay")):
-    if pad * length < length + L:
-      raise ValueError(
-        f"padding {pad} is too small along {label}: the padded period "
-        f"{pad * length:.4g} must exceed {label} + L = {length + L:.4g}. "
-        "Increase `pad` or decrease `truncation_radius`."
-      )
-
-  # Centred integer mode indices, -N/2 ... N/2 - 1, matching `ifftshift` below.
-  kx = jnp.arange(pad * n) - (pad * n) // 2
-  ky = jnp.arange(pad * m) - (pad * m) // 2
-
-  Kx, Ky = jnp.meshgrid(
-    (2 * np.pi / (pad * ax)) * kx, (2 * np.pi / (pad * ay)) * ky
-  )
-  S = jnp.sqrt(jnp.square(Kx) + jnp.square(Ky))
-
-  GFFT = jnp.fft.ifftshift(jnp.asarray(fourier_green_function(L, omega, S)))
-
-  return LippSchwinParams(GFFT=GFFT, omega=omega, X=X, Y=Y, hx=hx, hy=hy)
+  return LippSchwinParams(kernel=kernel, omega=omega)
 
 
 def _apply_kernel(
@@ -252,15 +194,8 @@ def _apply_kernel(
   Returns:
     The convolved wavefield as a flattened array.
   """
-  rows, cols = params.shape
-  ghat = jnp.conj(params.GFFT) if conjugate else params.GFFT
-
-  padded = jnp.zeros(ghat.shape, dtype=ghat.dtype)
-  padded = padded.at[:rows, :cols].set(jnp.reshape(u, (rows, cols)))
-
-  transformed = jnp.fft.ifft2(ghat * jnp.fft.fft2(padded))
-
-  return jnp.reshape(transformed[:rows, :cols], (-1,))
+  kernel = params.kernel
+  return kernel.apply_adjoint(u) if conjugate else kernel.apply(u)
 
 
 @jit

@@ -1,5 +1,7 @@
 """Lippmann-Schwinger solver and inverse scattering tools in JAX."""
 
+from .domain import Domain
+from .kernels import GreenKernel
 from .jax_ls import (
   DEFAULT_PAD,
   DEFAULT_TRUNCATION_FACTOR,
@@ -37,6 +39,9 @@ from .near_field import (
 )
 
 __all__ = [
+  # Geometry and kernel.
+  "Domain",
+  "GreenKernel",
   # Configuration.
   "DEFAULT_PAD",
   "DEFAULT_TRUNCATION_FACTOR",
