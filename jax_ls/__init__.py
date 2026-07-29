@@ -31,9 +31,11 @@ from .sampling import (
   SamplingManifold,
 )
 from .near_field import (
+  Linearization,
   NearFieldParams,
   born_adjoint,
   born_linearization,
+  linearize,
   init_params_near_field,
   make_near_field_params,
   near_field_l2_loss,
@@ -85,6 +87,8 @@ __all__ = [
   "near_field_map_reverse_mode",
   "born_linearization",
   "born_adjoint",
+  "Linearization",
+  "linearize",
   # Misfit.
   "near_field_l2_loss",
   "near_field_l2_loss_and_grad",

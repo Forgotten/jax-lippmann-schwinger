@@ -273,7 +273,7 @@ def _sample_near_field(params: NearFieldParams, sigma: Array) -> Array:
 
 
 def _adjoint_apply(
-  params: NearFieldParams, nu_vect: Array, sigma: Array, cotangent: Array
+  params: NearFieldParams, nu_vect: Array, u_total: Array, cotangent: Array
 ) -> Array:
   """Apply the Hermitian adjoint J^H to a cotangent matrix.
 
@@ -298,15 +298,13 @@ def _adjoint_apply(
   Args:
     params: Configuration for the near-field map.
     nu_vect: Contrast vector.
-    sigma: Forward densities, one column per source.
+    u_total: Total field of every source, of shape (n_dof, n_sources).
     cotangent: Cotangent, of shape (n_sources, n_receivers).
 
   Returns:
     The cotangent with respect to `nu_vect`, of shape (n_dof,).
   """
   omega = params.ls_params.omega
-
-  u_total = _total_field(params, sigma)
 
   # Incident field of the adjoint problem.
   # `cotangent` is indexed (source, receiver) and `sampling_kernel` is
@@ -429,7 +427,10 @@ def near_field_map_reverse_mode_fwd(
 ) -> tuple[Array, tuple[Array, Array]]:
   """Forward pass of the reverse-mode rule."""
   sigma = _solve_all_sources(params, nu_vect, _incident_rhs(params, nu_vect))
-  return _sample_near_field(params, sigma).reshape((-1,)), (sigma, nu_vect)
+  return (
+    _sample_near_field(params, sigma).reshape((-1,)),
+    (_total_field(params, sigma), nu_vect),
+  )
 
 
 def near_field_map_reverse_mode_bwd(
@@ -442,9 +443,9 @@ def near_field_map_reverse_mode_bwd(
   ``J^T w = conj(J^H conj(w))``, so the Hermitian adjoint is reused with the
   cotangent conjugated on the way in and the result conjugated on the way out.
   """
-  sigma, nu_vect = residuals
+  u_total, nu_vect = residuals
   adjoint = _adjoint_apply(
-    params, nu_vect, sigma, jnp.conj(cotangent).reshape(params.data_shape)
+    params, nu_vect, u_total, jnp.conj(cotangent).reshape(params.data_shape)
   )
   return (jnp.conj(adjoint),)
 
@@ -499,7 +500,105 @@ def born_adjoint(
   """
   sigma = _solve_all_sources(params, nu_vect, _incident_rhs(params, nu_vect))
   return _adjoint_apply(
-    params, nu_vect, sigma, cotangent.reshape(params.data_shape)
+    params,
+    nu_vect,
+    _total_field(params, sigma),
+    cotangent.reshape(params.data_shape),
+  )
+
+
+# ---------------------------------------------------------------------------
+# Cached linearisation.
+# ---------------------------------------------------------------------------
+@struct.dataclass
+class Linearization:
+  """``J`` and ``J^H`` about a fixed contrast, sharing one forward solve.
+
+  `born_linearization` and `born_adjoint` each re-solve the forward problem
+  internally, so a Gauss-Newton inner loop that applies them ``2 * n_iter``
+  times pays for that solve every single time even though the linearisation
+  point never moves.  Measured, the repeat is about half the cost of each
+  application.  Building a `Linearization` once and calling `jvp` / `vjp` off it
+  does the forward solve exactly once.
+
+  Attributes:
+    params: Configuration for the near-field map.
+    nu_vect: The contrast the map is linearised about.
+    sigma: Forward densities, one column per source.
+    u_total: Total field of every source, of shape (n_dof, n_sources).
+    data: The forward map at `nu_vect`, flattened -- free, since the forward
+      solve had to happen anyway, and it is what the residual is measured from.
+  """
+
+  params: NearFieldParams
+  nu_vect: Array
+  sigma: Array
+  u_total: Array
+  data: Array
+
+  def jvp(self, delta_nu_vect: Array) -> Array:
+    """Apply ``J``: the Born approximation about `nu_vect`.
+
+    Costs one batched solve, against two for `born_linearization`.
+
+    Args:
+      delta_nu_vect: Perturbation of the contrast.
+
+    Returns:
+      ``J delta_nu``, flattened.
+    """
+    rhs = (
+      -(self.params.ls_params.omega**2)
+      * delta_nu_vect.reshape((-1, 1))
+      * self.u_total
+    )
+    delta_sigma = _solve_all_sources(self.params, self.nu_vect, rhs)
+    return _sample_near_field(self.params, delta_sigma).reshape((-1,))
+
+  def vjp(self, cotangent: Array) -> Array:
+    """Apply the Hermitian adjoint ``J^H``.
+
+    Costs one batched adjoint solve, against a forward *and* an adjoint solve
+    for `born_adjoint`.  Deliberately a method rather than an autodiff rule:
+    ``J^H`` is not what `jax.grad` expects, and calling it a `vjp` here is safe
+    only because nothing differentiates through this object.
+
+    Args:
+      cotangent: Cotangent in data space, flat or of shape
+        (n_sources, n_receivers).
+
+    Returns:
+      ``J^H w``, of shape (n_dof,).
+    """
+    return _adjoint_apply(
+      self.params,
+      self.nu_vect,
+      self.u_total,
+      cotangent.reshape(self.params.data_shape),
+    )
+
+
+@jit
+def linearize(params: NearFieldParams, nu_vect: Array) -> Linearization:
+  """Linearise the near-field map about a contrast.
+
+  Does the forward solve once; `Linearization.jvp` and `Linearization.vjp` then
+  reuse it.
+
+  Args:
+    params: Configuration for the near-field map.
+    nu_vect: Contrast vector to linearise about.
+
+  Returns:
+    A `Linearization` about `nu_vect`.
+  """
+  sigma = _solve_all_sources(params, nu_vect, _incident_rhs(params, nu_vect))
+  return Linearization(
+    params=params,
+    nu_vect=nu_vect,
+    sigma=sigma,
+    u_total=_total_field(params, sigma),
+    data=_sample_near_field(params, sigma).reshape((-1,)),
   )
 
 
@@ -532,7 +631,7 @@ def near_field_l2_loss_fwd(
   sigma = _solve_all_sources(params, nu_vect, _incident_rhs(params, nu_vect))
   residual = _sample_near_field(params, sigma) - u_data
   loss = 0.5 * jnp.sum(jnp.abs(residual) ** 2)
-  return loss, (sigma, residual, nu_vect)
+  return loss, (_total_field(params, sigma), residual, nu_vect)
 
 
 def near_field_l2_loss_bwd(
@@ -546,9 +645,9 @@ def near_field_l2_loss_bwd(
   The gradient of a real-valued misfit is the real part of ``J^H`` applied to
   the residual, so the same adjoint solve serves both.
   """
-  sigma, residual, nu_vect = residuals
+  u_total, residual, nu_vect = residuals
   return (
-    cotangent * jnp.real(_adjoint_apply(params, nu_vect, sigma, residual)),
+    cotangent * jnp.real(_adjoint_apply(params, nu_vect, u_total, residual)),
   )
 
 

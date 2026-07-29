@@ -240,3 +240,91 @@ class TestDeprecatedAliases:
     assert jax_ls.ls_solver_batched_sigma is jax_ls.ls_solver
     assert jax_ls.ls_solver_batched_adj is jax_ls.ls_solver_adj
     assert jax_ls.ls_solver_u is jax_ls.ls_solver_field
+
+
+class TestLinearization:
+  """`linearize` caches the forward solve that J and J^H both need.
+
+  The identities themselves are asserted above; what is new here is that the
+  cached object reproduces them *exactly*, so the optimisation is invisible.
+  """
+
+  def test_jvp_reproduces_born_linearization(self, setup):
+    lin = jax_ls.linearize(setup["params"], setup["nu"])
+    cached = lin.jvp(setup["delta_nu"])
+    direct = jax_ls.born_linearization(
+      setup["params"], setup["nu"], setup["delta_nu"]
+    )
+
+    err = float(jnp.linalg.norm(cached - direct) / jnp.linalg.norm(direct))
+    assert err < 1e-12, f"cached J differs from born_linearization: {err:.2e}"
+
+  def test_vjp_reproduces_born_adjoint(self, setup, rng_key):
+    params = setup["params"]
+    cotangent = (
+      random.normal(rng_key, (params.n_sources * params.n_receivers,)) + 0j
+    )
+
+    lin = jax_ls.linearize(params, setup["nu"])
+    cached = lin.vjp(cotangent)
+    direct = jax_ls.born_adjoint(params, setup["nu"], cotangent)
+
+    err = float(jnp.linalg.norm(cached - direct) / jnp.linalg.norm(direct))
+    assert err < 1e-12, f"cached J^H differs from born_adjoint: {err:.2e}"
+
+  def test_data_is_the_forward_map(self, setup):
+    """The forward solve is done anyway, so F[nu] comes along free."""
+    lin = jax_ls.linearize(setup["params"], setup["nu"])
+    expected = jax_ls.near_field_map(setup["params"], setup["nu"]).reshape(
+      (-1,)
+    )
+
+    err = float(
+      jnp.linalg.norm(lin.data - expected) / jnp.linalg.norm(expected)
+    )
+    assert err < 1e-12
+
+  def test_adjoint_identity_off_the_cached_object(self, setup, rng_key):
+    """<w, J t> = <J^H w, t> using only the cached applications."""
+    params = setup["params"]
+    key_t, key_r, key_i = random.split(rng_key, 3)
+    n_data = params.n_sources * params.n_receivers
+
+    tangent = random.normal(key_t, (params.ls_params.n_dof,))
+    cotangent = random.normal(key_r, (n_data,)) + 1j * random.normal(
+      key_i, (n_data,)
+    )
+
+    lin = jax_ls.linearize(params, setup["nu"])
+    lhs = jnp.vdot(cotangent, lin.jvp(tangent))
+    rhs = jnp.vdot(lin.vjp(cotangent), tangent)
+
+    err = float(jnp.abs(lhs - rhs) / jnp.abs(lhs))
+    assert err < 1e-8, (
+      f"adjoint identity broken on the cached object: {err:.2e}"
+    )
+
+  def test_works_on_an_asymmetric_geometry(self, rng_key):
+    """Caching must not reintroduce the square-shape assumption."""
+    params = jax_ls.init_params_near_field(
+      1.0, 1.0, 32, 32, 1.5, 12, 25.0, n_receivers=20
+    )
+    contrast = params.ls_params.domain.sample(
+      lambda X, Y: 0.5 * jnp.exp(-200 * (jnp.square(X) + jnp.square(Y)))
+    )
+    key_t, key_r = random.split(rng_key)
+
+    lin = jax_ls.linearize(params, contrast)
+    tangent = random.normal(key_t, (params.ls_params.n_dof,))
+    cotangent = random.normal(key_r, (12 * 20,)) + 0j
+
+    assert lin.jvp(tangent).shape == (12 * 20,)
+    assert lin.vjp(cotangent).shape == (params.ls_params.n_dof,)
+
+  def test_survives_a_jit_boundary(self, setup):
+    """It is a pytree, so it can be built inside one jit and used in another."""
+    build = jit(partial(jax_ls.linearize, setup["params"]))
+    apply_jvp = jit(lambda lin, d: lin.jvp(d))
+
+    lin = build(setup["nu"])
+    assert apply_jvp(lin, setup["delta_nu"]).shape == lin.data.shape
