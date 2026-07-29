@@ -34,6 +34,21 @@ DEFAULT_PAD = 4
 DEFAULT_TRUNCATION_FACTOR = 1.05
 
 
+def green_function(r: Array, omega: float) -> Array:
+  """Evaluate the fundamental solution of the Helmholtz equation in space.
+
+  Note the sign: it satisfies ``Delta G(x,y) + omega^2 G(x,y) = -delta(x,y)``.
+
+  Args:
+    r: Distance between points.
+    omega: Angular frequency.
+
+  Returns:
+    The value of the Green's function at distance r.
+  """
+  return (1j / 4) * sp.special.hankel1(0, omega * r)
+
+
 def fourier_green_function(L: float, k: float, s: Array) -> Array:
   """Evaluate the truncated Green's function in the Fourier domain.
 

@@ -1,7 +1,7 @@
 """Lippmann-Schwinger solver and inverse scattering tools in JAX."""
 
 from .domain import Domain
-from .kernels import GreenKernel
+from .kernels import GreenKernel, green_function
 from .jax_ls import (
   DEFAULT_PAD,
   DEFAULT_TRUNCATION_FACTOR,
@@ -21,12 +21,18 @@ from .jax_ls import (
   ls_solver_field,
   ls_solver_u,
 )
+from .sampling import (
+  IncidentField,
+  PlaneWaves,
+  PointSources,
+  SamplingManifold,
+)
 from .near_field import (
   NearFieldParams,
   born_adjoint,
   born_linearization,
-  green_function,
   init_params_near_field,
+  make_near_field_params,
   near_field_l2_loss,
   near_field_l2_loss_and_grad,
   near_field_l2_loss_grad,
@@ -42,6 +48,10 @@ __all__ = [
   # Geometry and kernel.
   "Domain",
   "GreenKernel",
+  "IncidentField",
+  "PlaneWaves",
+  "PointSources",
+  "SamplingManifold",
   # Configuration.
   "DEFAULT_PAD",
   "DEFAULT_TRUNCATION_FACTOR",
@@ -50,6 +60,7 @@ __all__ = [
   "NearFieldParams",
   "init_params",
   "init_params_near_field",
+  "make_near_field_params",
   # Kernels and operators.
   "fourier_green_function",
   "green_function",

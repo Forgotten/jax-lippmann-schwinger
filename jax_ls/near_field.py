@@ -46,14 +46,13 @@ explicit minus sign.
 
 from functools import partial
 
-import scipy as sp
-
 import jax
 import jax.numpy as jnp
 from jax import custom_jvp, custom_vjp, jit, vmap
 
 from flax import struct
 
+from .sampling import IncidentField, PointSources, SamplingManifold
 from .jax_ls import LippSchwinParams, init_params
 from .jax_ls import apply_conj_green_function, apply_green_function
 from .jax_ls import ls_solver, ls_solver_adj
@@ -61,35 +60,25 @@ from .jax_ls import ls_solver, ls_solver_adj
 Array = jax.Array
 
 
-def green_function(r: Array, omega: float) -> Array:
-  """Evaluate the fundamental solution of the Helmholtz equation.
-
-  Note the sign: it satisfies Delta G(x,y) + omega^2 G(x,y) = -delta(x,y).
-
-  Args:
-    r: Distance between points.
-    omega: Angular frequency.
-
-  Returns:
-    The value of the Green's function at distance r.
-  """
-  return (1j / 4) * sp.special.hankel1(0, omega * r)
-
-
 @struct.dataclass
 class NearFieldParams:
   """Configuration for the near-field map and its derivatives.
 
+  The incident field and the sampling kernel are separate: sources and
+  receivers may differ in number, position and kind.  When they coincide the
+  two matrices are equal and `G_sample` returns either.
+
   Attributes:
     ls_params: Lippmann-Schwinger configuration.
-    G_sample: Minus the Green's function sampled between the grid and the
-      observation manifold, of shape (n_dof, n_theta).  It plays two roles: its
-      columns are the incident fields of the point sources, and it is the kernel
-      that samples the scattered field at the receivers.
+    incident_field: The incident field of every source, of shape
+      ``(n_dof, n_sources)``.
+    sampling_kernel: The kernel sampling the scattered field at the receivers,
+      of shape ``(n_dof, n_receivers)``.
   """
 
   ls_params: LippSchwinParams
-  G_sample: Array
+  incident_field: Array
+  sampling_kernel: Array
 
   # The grid spacings live on `ls_params`; exposing them here keeps the call
   # sites short without storing a second, independent copy.
@@ -109,9 +98,72 @@ class NearFieldParams:
     return self.ls_params.cell_area
 
   @property
+  def n_sources(self) -> int:
+    """Number of illuminations."""
+    return self.incident_field.shape[1]
+
+  @property
+  def n_receivers(self) -> int:
+    """Number of measurement points."""
+    return self.sampling_kernel.shape[1]
+
+  @property
+  def data_shape(self) -> tuple[int, int]:
+    """Shape of the near field, indexed (source, receiver)."""
+    return (self.n_sources, self.n_receivers)
+
+  @property
+  def is_reciprocal(self) -> bool:
+    """Whether sources and receivers coincide.
+
+    Only then is the near-field matrix symmetric, and only then is `G_sample`
+    meaningful.
+    """
+    return self.incident_field.shape == self.sampling_kernel.shape and bool(
+      jnp.array_equal(self.incident_field, self.sampling_kernel)
+    )
+
+  @property
   def n_theta(self) -> int:
-    """Number of sources, which is also the number of receivers."""
-    return self.G_sample.shape[1]
+    """Deprecated: the common number of sources and receivers."""
+    if self.n_sources != self.n_receivers:
+      raise ValueError(
+        f"`n_theta` is ambiguous with {self.n_sources} sources and "
+        f"{self.n_receivers} receivers; use `n_sources` or `n_receivers`."
+      )
+    return self.n_receivers
+
+  @property
+  def G_sample(self) -> Array:
+    """Deprecated: the sampling kernel, which used to serve both roles."""
+    return self.sampling_kernel
+
+
+def make_near_field_params(
+  ls_params: LippSchwinParams,
+  incident: IncidentField,
+  receivers: SamplingManifold,
+) -> NearFieldParams:
+  """Assemble near-field parameters from an illumination and a receiver set.
+
+  This is the general constructor; `init_params_near_field` is the convenience
+  wrapper that puts point sources and receivers on the same circle.
+
+  Args:
+    ls_params: Lippmann-Schwinger configuration.
+    incident: What illuminates the medium.
+    receivers: Where the scattered field is measured.
+
+  Returns:
+    An initialized NearFieldParams object.
+  """
+  domain = ls_params.domain
+  omega = ls_params.omega
+  return NearFieldParams(
+    ls_params=ls_params,
+    incident_field=incident.evaluate(domain, omega),
+    sampling_kernel=receivers.sampling_kernel(domain, omega),
+  )
 
 
 def init_params_near_field(
@@ -122,9 +174,14 @@ def init_params_near_field(
   r: float,
   n_theta: int,
   omega: float,
+  n_receivers: int | None = None,
   **kwargs,
 ) -> NearFieldParams:
   """Initialize parameters for the near-field measurement system.
+
+  Point sources and receivers on a circle of radius `r`.  By default they
+  coincide, which makes the near-field matrix symmetric by reciprocity; pass
+  `n_receivers` to separate them.
 
   Args:
     ax: Length of the domain in the x direction.
@@ -132,34 +189,24 @@ def init_params_near_field(
     n: Number of discretization points in the x direction.
     m: Number of discretization points in the y direction.
     r: Radius of the observation manifold.
-    n_theta: Number of samples/sources on the observation manifold.
+    n_theta: Number of sources on the observation manifold.
     omega: Angular frequency.
+    n_receivers: Number of receivers; defaults to `n_theta`.
     **kwargs: Forwarded to `init_params` (e.g. `pad`, `truncation_radius`).
 
   Returns:
     An initialized NearFieldParams object.
   """
-  params = init_params(ax, ay, n, m, omega, **kwargs)
+  ls_params = init_params(ax, ay, n, m, omega, **kwargs)
 
-  d_theta = jnp.pi * 2 / n_theta
-  theta = jnp.linspace(jnp.pi, 3 * jnp.pi - d_theta, n_theta)
-
-  # Defining the observation (and sampling) manifold.
-  X_s = r * jnp.concatenate(
-    [
-      jnp.cos(theta).reshape((n_theta, 1)),
-      jnp.sin(theta).reshape((n_theta, 1)),
-    ],
-    axis=1,
+  sources = SamplingManifold.circle(r, n_theta)
+  receivers = (
+    sources
+    if n_receivers is None or n_receivers == n_theta
+    else SamplingManifold.circle(r, n_receivers)
   )
 
-  # Computing the distances to each evaluation point.
-  R = jnp.sqrt(
-    jnp.square(params.X.reshape((-1, 1)) - X_s[:, 0].reshape((1, -1)))
-    + jnp.square(params.Y.reshape((-1, 1)) - X_s[:, 1].reshape((1, -1)))
-  )
-
-  return NearFieldParams(params, -green_function(R, omega))
+  return make_near_field_params(ls_params, PointSources(sources), receivers)
 
 
 # ---------------------------------------------------------------------------
@@ -169,7 +216,9 @@ def init_params_near_field(
 def _incident_rhs(params: NearFieldParams, nu_vect: Array) -> Array:
   """Right-hand side of the integral equation, one column per source."""
   return (
-    -(params.ls_params.omega**2) * nu_vect.reshape((-1, 1)) * params.G_sample
+    -(params.ls_params.omega**2)
+    * nu_vect.reshape((-1, 1))
+    * params.incident_field
   )
 
 
@@ -211,16 +260,16 @@ def _apply_conj_green_all(params: NearFieldParams, sigma: Array) -> Array:
 
 def _total_field(params: NearFieldParams, sigma: Array) -> Array:
   """Total field (incident plus scattered) for every source."""
-  return _apply_green_all(params, sigma) + params.G_sample
+  return _apply_green_all(params, sigma) + params.incident_field
 
 
 def _sample_near_field(params: NearFieldParams, sigma: Array) -> Array:
   """Sample the scattered field on the observation manifold.
 
-  The result is indexed (source, receiver).  The minus sign is the
-  ``G_sample = -G`` convention described in the module docstring.
+  The result is indexed (source, receiver).  The minus sign is the ``-G``
+  convention described in the module docstring.
   """
-  return -(sigma.T @ params.G_sample) * params.cell_area
+  return -(sigma.T @ params.sampling_kernel) * params.cell_area
 
 
 def _adjoint_apply(
@@ -231,23 +280,26 @@ def _adjoint_apply(
   The adjoint problem is assembled in exactly the same "incident plus scattered"
   form as the forward problem, with the conjugate kernel:
 
-    u_i^H  = omega^2 conj(G_sample) w         (field radiated back by the residual)
+    u_i^H  = omega^2 conj(S)^T-contracted w   (field radiated back by the residual)
     rhs^H  = -omega^2 nu * u_i^H
     sigma^H = A_adj^{-1} rhs^H
     u^H    = G^H sigma^H + u_i^H
     J^H w  = -cell_area * sum_sources conj(u_total) * u^H
 
-  The contraction of `cotangent` with `G_sample` pairs the *source* index of the
-  cotangent with the receiver index of the kernel.  That is legitimate because
-  the linearised map is reciprocal -- ``J t`` is a symmetric matrix for every
-  ``t`` -- so ``J`` annihilates the antisymmetric part of any cotangent and both
-  pairings define the same adjoint on the range of ``J``.
+  The cotangent is contracted along its *receiver* index against the sampling
+  kernel, which leaves the source index to pair with the total field.  When
+  sources and receivers coincide the opposite pairing gives the same answer,
+  because the range of ``J`` consists of symmetric matrices -- the Born
+  derivative is ``-omega^2 int u^s dnu u^r``, symmetric in (s, r) -- so ``J``
+  annihilates the antisymmetric part of any cotangent.  That shortcut is not
+  available once the two manifolds differ, which is why the transpose below is
+  explicit.
 
   Args:
     params: Configuration for the near-field map.
     nu_vect: Contrast vector.
     sigma: Forward densities, one column per source.
-    cotangent: Cotangent, of shape (n_theta, n_theta).
+    cotangent: Cotangent, of shape (n_sources, n_receivers).
 
   Returns:
     The cotangent with respect to `nu_vect`, of shape (n_dof,).
@@ -257,7 +309,13 @@ def _adjoint_apply(
   u_total = _total_field(params, sigma)
 
   # Incident field of the adjoint problem.
-  u_adj_incident = (omega**2) * (jnp.conj(params.G_sample) @ cotangent)
+  # `cotangent` is indexed (source, receiver) and `sampling_kernel` is
+  # (n_dof, n_receivers), so the transpose is what contracts the receiver
+  # index and leaves the source index -- giving (n_dof, n_sources), which is
+  # what the total field is indexed by.  When sources and receivers coincide
+  # the transpose is invisible, because the range of J consists of symmetric
+  # matrices; it stops being invisible the moment the two differ.
+  u_adj_incident = (omega**2) * (jnp.conj(params.sampling_kernel) @ cotangent.T)
 
   rhs_adjoint = -(omega**2) * u_adj_incident * nu_vect.reshape((-1, 1))
   sigma_adj = _solve_all_sources_adj(params, nu_vect, rhs_adjoint)
@@ -281,7 +339,7 @@ def near_field_map(params: NearFieldParams, nu_vect: Array) -> Array:
     nu_vect: Contrast vector.
 
   Returns:
-    The near field, of shape (n_theta, n_theta), indexed (source, receiver).
+    The near field, of shape (n_sources, n_receivers).
   """
   sigma = _solve_all_sources(params, nu_vect, _incident_rhs(params, nu_vect))
   return _sample_near_field(params, sigma)
@@ -301,7 +359,7 @@ def near_field_map_forward_mode(
     nu_vect: Contrast vector.
 
   Returns:
-    The near field, flattened to shape (n_theta * n_theta,).
+    The near field, flattened to shape (n_sources * n_receivers,).
   """
   sigma = _solve_all_sources(params, nu_vect, _incident_rhs(params, nu_vect))
   return _sample_near_field(params, sigma).reshape((-1,))
@@ -360,7 +418,7 @@ def near_field_map_reverse_mode(
     nu_vect: Contrast vector.
 
   Returns:
-    The near field, flattened to shape (n_theta * n_theta,).
+    The near field, flattened to shape (n_sources * n_receivers,).
   """
   sigma = _solve_all_sources(params, nu_vect, _incident_rhs(params, nu_vect))
   return _sample_near_field(params, sigma).reshape((-1,))
@@ -385,9 +443,8 @@ def near_field_map_reverse_mode_bwd(
   cotangent conjugated on the way in and the result conjugated on the way out.
   """
   sigma, nu_vect = residuals
-  n_theta = params.n_theta
   adjoint = _adjoint_apply(
-    params, nu_vect, sigma, jnp.conj(cotangent).reshape((n_theta, n_theta))
+    params, nu_vect, sigma, jnp.conj(cotangent).reshape(params.data_shape)
   )
   return (jnp.conj(adjoint),)
 
@@ -412,7 +469,7 @@ def born_linearization(
     delta_nu_vect: Perturbation of the contrast.
 
   Returns:
-    J delta_nu, flattened to shape (n_theta * n_theta,).
+    J delta_nu, flattened to shape (n_sources * n_receivers,).
   """
   _, tangent = near_field_map_forward_mode_jvp(
     params, (nu_vect,), (delta_nu_vect,)
@@ -434,15 +491,15 @@ def born_adjoint(
   Args:
     params: Configuration for the near-field map.
     nu_vect: Contrast vector the map is linearised about.
-    cotangent: Cotangent in data space, flat or of shape (n_theta, n_theta).
+    cotangent: Cotangent in data space, flat or of shape
+      (n_sources, n_receivers).
 
   Returns:
     J^H w, of shape (n_dof,).
   """
   sigma = _solve_all_sources(params, nu_vect, _incident_rhs(params, nu_vect))
-  n_theta = params.n_theta
   return _adjoint_apply(
-    params, nu_vect, sigma, cotangent.reshape((n_theta, n_theta))
+    params, nu_vect, sigma, cotangent.reshape(params.data_shape)
   )
 
 
@@ -457,7 +514,7 @@ def near_field_l2_loss(
 
   Args:
     params: Configuration for the near-field map.
-    u_data: Reference near-field data, of shape (n_theta, n_theta).
+    u_data: Reference near-field data, of shape (n_sources, n_receivers).
     nu_vect: Contrast vector.
 
   Returns:
@@ -509,7 +566,7 @@ def near_field_l2_loss_and_grad(
 
   Args:
     params: Configuration for the near-field map.
-    u_data: Reference near-field data, of shape (n_theta, n_theta).
+    u_data: Reference near-field data, of shape (n_sources, n_receivers).
     nu_vect: Contrast vector.
 
   Returns:
