@@ -2,6 +2,7 @@
 
 from .domain import Domain
 from .kernels import GreenKernel, green_function
+from .solvers import GmresConfig, SolveInfo
 from .jax_ls import (
   DEFAULT_PAD,
   DEFAULT_TRUNCATION_FACTOR,
@@ -15,6 +16,8 @@ from .jax_ls import (
   init_params,
   ls_solver,
   ls_solver_adj,
+  ls_solver_adj_with_info,
+  ls_solver_with_info,
   ls_solver_batched,
   ls_solver_batched_adj,
   ls_solver_batched_sigma,
@@ -69,8 +72,12 @@ __all__ = [
   "apply_lipp_schwin",
   "apply_lipp_schwin_adj",
   # Solvers.
+  "GmresConfig",
+  "SolveInfo",
   "ls_solver",
   "ls_solver_adj",
+  "ls_solver_with_info",
+  "ls_solver_adj_with_info",
   "ls_solver_field",
   # Near-field map and derivatives.
   "near_field_map",

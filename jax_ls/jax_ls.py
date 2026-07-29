@@ -34,6 +34,7 @@ from jax import custom_jvp, jit
 from flax import struct
 
 from .domain import Domain
+from .solvers import GmresConfig, SolveInfo, solve, solve_with_info
 from .kernels import (
   DEFAULT_PAD,
   DEFAULT_TRUNCATION_FACTOR,
@@ -56,9 +57,13 @@ __all__ = [
   "apply_lipp_schwin",
   "apply_lipp_schwin_adj",
   "fourier_green_function",
+  "GmresConfig",
+  "SolveInfo",
   "init_params",
   "ls_solver",
   "ls_solver_adj",
+  "ls_solver_with_info",
+  "ls_solver_adj_with_info",
   "ls_solver_batched",
   "ls_solver_batched_adj",
   "ls_solver_batched_sigma",
@@ -270,45 +275,98 @@ def apply_lipp_schwin_adj(
   )
 
 
-@jit
-def ls_solver(params: LippSchwinParams, nu_vect: Array, f: Array) -> Array:
-  """Solve the Lippmann-Schwinger equation for the density.
+def _lipp_schwin_operator(params: LippSchwinParams, nu_vect: Array):
+  """The Lippmann-Schwinger operator as a callable, for the linear solvers."""
+  return lambda x: apply_lipp_schwin(params, nu_vect, x)
 
-  Note that `jax.scipy.sparse.linalg.gmres` already defaults to
-  ``solve_method="batched"``; that option selects how the inner least-squares
-  problem is solved and has nothing to do with multiple right-hand sides.
-  Several right-hand sides are handled by `vmap`-ing this function.
+
+def _lipp_schwin_operator_adj(params: LippSchwinParams, nu_vect: Array):
+  """The adjoint-like operator as a callable, for the linear solvers."""
+  return lambda x: apply_lipp_schwin_adj(params, nu_vect, x)
+
+
+@jit
+def ls_solver(
+  params: LippSchwinParams,
+  nu_vect: Array,
+  f: Array,
+  config: GmresConfig = GmresConfig(),
+  x0: Array | None = None,
+) -> Array:
+  """Solve the Lippmann-Schwinger equation for the density.
 
   Args:
     params: Configuration parameters for the solver.
     nu_vect: Contrast/perturbation vector.
     f: Right-hand side vector.
+    config: GMRES settings.  Defaults are unchanged from before.
+    x0: Optional initial guess.
 
   Returns:
     The solution density sigma.
   """
-  sigma, _ = jax.scipy.sparse.linalg.gmres(
-    lambda x: apply_lipp_schwin(params, nu_vect, x), f
-  )
-  return sigma
+  return solve(_lipp_schwin_operator(params, nu_vect), f, config, x0)
 
 
 @jit
-def ls_solver_adj(params: LippSchwinParams, nu_vect: Array, f: Array) -> Array:
+def ls_solver_adj(
+  params: LippSchwinParams,
+  nu_vect: Array,
+  f: Array,
+  config: GmresConfig = GmresConfig(),
+  x0: Array | None = None,
+) -> Array:
   """Solve the adjoint Lippmann-Schwinger equation for the density.
 
   Args:
     params: Configuration parameters for the solver.
     nu_vect: Contrast/perturbation vector.
     f: Right-hand side vector.
+    config: GMRES settings.
+    x0: Optional initial guess.
 
   Returns:
     The adjoint solution density.
   """
-  sigma, _ = jax.scipy.sparse.linalg.gmres(
-    lambda x: apply_lipp_schwin_adj(params, nu_vect, x), f
+  return solve(_lipp_schwin_operator_adj(params, nu_vect), f, config, x0)
+
+
+@jit
+def ls_solver_with_info(
+  params: LippSchwinParams,
+  nu_vect: Array,
+  f: Array,
+  config: GmresConfig = GmresConfig(),
+  x0: Array | None = None,
+) -> tuple[Array, SolveInfo]:
+  """Solve, and report whether GMRES converged.
+
+  GMRES's own ``info`` is always 0 and carries no information, so the residual
+  is measured here at the cost of one extra operator application.  Worth it
+  when the contrast is large: see `jax_ls.solvers`.
+
+  Returns:
+    A tuple of (density, `SolveInfo`).
+  """
+  return solve_with_info(_lipp_schwin_operator(params, nu_vect), f, config, x0)
+
+
+@jit
+def ls_solver_adj_with_info(
+  params: LippSchwinParams,
+  nu_vect: Array,
+  f: Array,
+  config: GmresConfig = GmresConfig(),
+  x0: Array | None = None,
+) -> tuple[Array, SolveInfo]:
+  """Solve the adjoint equation, and report whether GMRES converged.
+
+  Returns:
+    A tuple of (adjoint density, `SolveInfo`).
+  """
+  return solve_with_info(
+    _lipp_schwin_operator_adj(params, nu_vect), f, config, x0
   )
-  return sigma
 
 
 @partial(custom_jvp, nondiff_argnums=(0, 2))
