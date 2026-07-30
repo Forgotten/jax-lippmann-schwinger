@@ -64,7 +64,6 @@ class Domain:
     if self.ax <= 0 or self.ay <= 0:
       raise ValueError(f"the domain must have positive size, got {self.size}")
 
-  # -- size ----------------------------------------------------------------
   @property
   def size(self) -> tuple[float, float]:
     """Physical size ``(ax, ay)`` of the domain."""
@@ -75,7 +74,6 @@ class Domain:
     """Largest distance between two points of the domain."""
     return float(np.hypot(self.ax, self.ay))
 
-  # -- discretisation ------------------------------------------------------
   @property
   def hx(self) -> float:
     """Grid spacing in x."""
@@ -101,7 +99,6 @@ class Domain:
     """Number of grid points."""
     return self.n * self.m
 
-  # -- coordinates ---------------------------------------------------------
   @property
   def x(self) -> Array:
     """The x axis, of length ``n``."""

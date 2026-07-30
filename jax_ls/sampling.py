@@ -101,7 +101,7 @@ class SamplingManifold:
       )
     return cls(points=points)
 
-  # -- use -----------------------------------------------------------------
+  # -- use ---
   @property
   def n_points(self) -> int:
     """Number of points on the manifold."""

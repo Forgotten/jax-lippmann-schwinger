@@ -3,6 +3,31 @@
 from .domain import Domain
 from .kernels import GreenKernel, green_function
 from .solvers import GmresConfig, SolveInfo
+from .filters import band_dimension, band_index, band_limit, band_mask
+from .losses import (
+  FrequencyDataset,
+  Weighting,
+  frequency_weights,
+  make_wideband_loss,
+  wideband_loss,
+)
+from .inversion import (
+  CglsConfig,
+  FrequencySchedule,
+  GaussNewton,
+  InversionResult,
+  NormalEquationsConfig,
+  QuasiNewton,
+  SweepStage,
+  as_stages,
+  cgls,
+  frequency_sweep,
+  gauss_newton_step,
+  make_sweep_params,
+  minimize,
+  recursive_linearization,
+  wideband_minimize,
+)
 from .jax_ls import (
   DEFAULT_PAD,
   DEFAULT_TRUNCATION_FACTOR,
@@ -92,6 +117,33 @@ __all__ = [
   # Misfit.
   "near_field_l2_loss",
   "near_field_l2_loss_and_grad",
+  # Band-limiting.
+  "band_limit",
+  "band_mask",
+  "band_index",
+  "band_dimension",
+  # Multi-frequency misfit.
+  "FrequencyDataset",
+  "Weighting",
+  "frequency_weights",
+  "wideband_loss",
+  "make_wideband_loss",
+  # Inversion.
+  "CglsConfig",
+  "NormalEquationsConfig",
+  "GaussNewton",
+  "QuasiNewton",
+  "InversionResult",
+  "cgls",
+  "gauss_newton_step",
+  "minimize",
+  "FrequencySchedule",
+  "SweepStage",
+  "as_stages",
+  "make_sweep_params",
+  "frequency_sweep",
+  "recursive_linearization",
+  "wideband_minimize",
   # Deprecated aliases, kept so existing scripts keep working.
   "ls_solver_batched",
   "ls_solver_batched_adj",
