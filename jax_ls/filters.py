@@ -28,7 +28,7 @@ singular on the invisible modes.
 
 On the grid of a `Domain` the DFT modes are ``xi_j = 2 pi j / ax``, so the band
 ``|xi| <= factor * omega`` keeps mode indices ``|j| <= factor * omega * ax /
-(2 pi)``.  At ``omega = 8 pi``, ``ax = 1``, ``n = 64`` that retains 193 of 4096
+(2 pi)``.  At ``omega = 8 pi``, ``ax = 1``, ``n = 64`` that retains 197 of 4096
 modes -- a twentyfold reduction -- against the ``pi * (omega ax / pi)^2 = 201``
 the area of the disc predicts.
 """
