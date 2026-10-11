@@ -1,5 +1,4 @@
-"""Misfits over several frequencies, and how to weight them.
-"""
+"""Misfits over several frequencies, and how to weight them."""
 
 import enum
 from typing import Callable
