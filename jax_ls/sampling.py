@@ -130,7 +130,12 @@ class SamplingManifold:
       ``-G`` between every grid point and every manifold point, of shape
       ``(n_dof, n_points)``.  See the module docstring on the sign.
     """
-    return -green_function(self.distances_to(domain), omega)
+    # `green_function` goes through `scipy.special.hankel1`, so the result comes
+    # back as a host numpy array.  Commit it to the device here: left as numpy it
+    # is a pytree leaf that every jitted call would copy host -> device afresh,
+    # which is free on CPU but not on an accelerator -- this matrix is several
+    # megabytes and is used by every solve.
+    return jnp.asarray(-green_function(self.distances_to(domain), omega))
 
 
 class IncidentField(Protocol):
