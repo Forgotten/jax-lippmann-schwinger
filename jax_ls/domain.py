@@ -124,7 +124,7 @@ class Domain:
     """``(X, Y)``, matching ``jnp.meshgrid(x, y)``."""
     return self.X, self.Y
 
-  # -- helpers -------------------------------------------------------------
+  # Helper functions.
   def grid(self, u: Array) -> Array:
     """Reshape a flat field to the ``(m, n)`` grid."""
     return u.reshape(self.shape)
