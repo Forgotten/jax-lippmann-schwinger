@@ -165,6 +165,16 @@ class BlockGmresConfig:
   largest at 64 sources.  Low-rank compression of ``B`` is unavailable for the
   same reason.
 
+  Restarting does not rescue it, which is worth recording because it is the
+  obvious thing to try.  Shortening the basis cuts the dense work but destroys
+  convergence far faster: at ``n = 128`` with 64 sources and the same twelve
+  operator applications, ``n_steps=12, cycles=1`` reaches 3.4e-5 while
+  ``n_steps=6, cycles=2`` reaches only 1.1e-2 and ``n_steps=3, cycles=4`` only
+  1.2e-1.  The large basis is what makes block Arnoldi converge, and the large
+  basis is exactly what makes it slow.  Spending more applications does work --
+  ``n_steps=12, cycles=2`` reaches 1.9e-10 -- but takes 12.2 s against the
+  per-source solve's 4.3 s for 4.7e-6.
+
   Two caveats keep this worth having.  The measurement is CPU-only, and the
   overhead is BLAS-3 dense algebra that an accelerator does far more cheaply
   relative to a bandwidth-bound FFT, so the verdict may invert on a GPU.  And
