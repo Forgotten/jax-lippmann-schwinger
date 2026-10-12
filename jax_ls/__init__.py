@@ -2,7 +2,13 @@
 
 from .domain import Domain
 from .kernels import GreenKernel, green_function
-from .solvers import GmresConfig, SolveInfo
+from .solvers import (
+  BlockGmresConfig,
+  GmresConfig,
+  SolveInfo,
+  block_solve,
+  block_solve_with_info,
+)
 from .filters import band_dimension, band_index, band_limit, band_mask
 from .losses import (
   FrequencyDataset,
@@ -100,6 +106,9 @@ __all__ = [
   "apply_lipp_schwin_adj",
   # Solvers.
   "GmresConfig",
+  "BlockGmresConfig",
+  "block_solve",
+  "block_solve_with_info",
   "SolveInfo",
   "ls_solver",
   "ls_solver_adj",

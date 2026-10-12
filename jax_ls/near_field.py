@@ -55,7 +55,9 @@ from flax import struct
 from .sampling import IncidentField, PointSources, SamplingManifold
 from .jax_ls import LippSchwinParams, init_params
 from .jax_ls import apply_conj_green_function, apply_green_function
+from .jax_ls import apply_lipp_schwin, apply_lipp_schwin_adj
 from .jax_ls import ls_solver, ls_solver_adj
+from .solvers import BlockGmresConfig, block_solve
 
 Array = jax.Array
 
@@ -74,11 +76,17 @@ class NearFieldParams:
       ``(n_dof, n_sources)``.
     sampling_kernel: The kernel sampling the scattered field at the receivers,
       of shape ``(n_dof, n_receivers)``.
+    block: Optional block-GMRES settings; `None` solves each source separately.
   """
 
   ls_params: LippSchwinParams
   incident_field: Array
   sampling_kernel: Array
+  # When set, the per-source solves are replaced by one block GMRES solve over
+  # all right-hand sides at once.  Static, so switching it is a recompile rather
+  # than a traced branch.  See `jax_ls.solvers.BlockGmresConfig` for when that
+  # is a good idea -- on CPU it usually is not.
+  block: BlockGmresConfig | None = struct.field(pytree_node=False, default=None)
 
   # The grid spacings live on `ls_params`; exposing them here keeps the call
   # sites short without storing a second, independent copy.
@@ -143,6 +151,7 @@ def make_near_field_params(
   ls_params: LippSchwinParams,
   incident: IncidentField,
   receivers: SamplingManifold,
+  block: BlockGmresConfig | None = None,
 ) -> NearFieldParams:
   """Assemble near-field parameters from an illumination and a receiver set.
 
@@ -153,6 +162,7 @@ def make_near_field_params(
     ls_params: Lippmann-Schwinger configuration.
     incident: What illuminates the medium.
     receivers: Where the scattered field is measured.
+    block: Optional block-GMRES settings for the per-source solves.
 
   Returns:
     An initialized NearFieldParams object.
@@ -163,6 +173,7 @@ def make_near_field_params(
     ls_params=ls_params,
     incident_field=incident.evaluate(domain, omega),
     sampling_kernel=receivers.sampling_kernel(domain, omega),
+    block=block,
   )
 
 
@@ -175,6 +186,7 @@ def init_params_near_field(
   n_theta: int,
   omega: float,
   n_receivers: int | None = None,
+  block: BlockGmresConfig | None = None,
   **kwargs,
 ) -> NearFieldParams:
   """Initialize parameters for the near-field measurement system.
@@ -192,6 +204,7 @@ def init_params_near_field(
     n_theta: Number of sources on the observation manifold.
     omega: Angular frequency.
     n_receivers: Number of receivers; defaults to `n_theta`.
+    block: Optional block-GMRES settings for the per-source solves.
     **kwargs: Forwarded to `init_params` (e.g. `pad`, `truncation_radius`).
 
   Returns:
@@ -206,7 +219,9 @@ def init_params_near_field(
     else SamplingManifold.circle(r, n_receivers)
   )
 
-  return make_near_field_params(ls_params, PointSources(sources), receivers)
+  return make_near_field_params(
+    ls_params, PointSources(sources), receivers, block=block
+  )
 
 
 # ---------------------------------------------------------------------------
@@ -226,6 +241,14 @@ def _solve_all_sources(
   params: NearFieldParams, nu_vect: Array, rhs: Array
 ) -> Array:
   """Solve the integral equation for every column of `rhs`."""
+  if params.block is not None:
+    operator = vmap(
+      partial(apply_lipp_schwin, params.ls_params, nu_vect),
+      in_axes=1,
+      out_axes=1,
+    )
+    return block_solve(operator, rhs, params.block)
+
   solve = vmap(
     partial(ls_solver, params.ls_params, nu_vect), in_axes=1, out_axes=1
   )
@@ -236,6 +259,14 @@ def _solve_all_sources_adj(
   params: NearFieldParams, nu_vect: Array, rhs: Array
 ) -> Array:
   """Solve the adjoint integral equation for every column of `rhs`."""
+  if params.block is not None:
+    operator = vmap(
+      partial(apply_lipp_schwin_adj, params.ls_params, nu_vect),
+      in_axes=1,
+      out_axes=1,
+    )
+    return block_solve(operator, rhs, params.block)
+
   solve = vmap(
     partial(ls_solver_adj, params.ls_params, nu_vect), in_axes=1, out_axes=1
   )
