@@ -70,6 +70,24 @@ the wrong one gives a wrong derivative with no error:
 | `born_linearization` | `J dnu`, explicitly | matrix-free solvers |
 | `born_adjoint` | `J^H w`, the *Hermitian* adjoint | CGLS / Gauss-Newton — **not** `jax.grad` |
 
+## Preconditioning
+
+GMRES iteration counts grow with the frequency and the contrast. `jax_ls.sparsify` implements
+L. Ying's sparsifying preconditioner ([arXiv:1408.4495](https://arxiv.org/abs/1408.4495)),
+which keeps them at around ten:
+
+```python
+params = jax_ls.init_params(1.0, 1.0, 127, 127, 80.0, sparsify=True)
+# or: params = jax_ls.with_sparsifying_preconditioner(params)
+```
+
+Every solve built on `params` is then right-preconditioned: `ls_solver`, the near-field map,
+its derivatives and the inversions. Answers and derivatives are unchanged. At `n = 127`,
+`omega = 80`, a smooth contrast of 4 goes from 1333 GMRES iterations to 11. The sparse LU it
+needs runs on the host through `jax.pure_callback`, once per contrast, and is shared by every
+forward and adjoint solve at that contrast. See
+[`notebooks/sparsifying_preconditioner_notebook.ipynb`](notebooks/sparsifying_preconditioner_notebook.ipynb).
+
 ## Organization 
 
 This repository is organized as follows: 
