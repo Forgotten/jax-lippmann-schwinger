@@ -73,7 +73,11 @@ class SolveInfo:
 
 
 def solve(
-  operator, rhs: Array, config: GmresConfig, x0: Array | None = None
+  operator,
+  rhs: Array,
+  config: GmresConfig,
+  x0: Array | None = None,
+  preconditioner=None,
 ) -> Array:
   """Solve ``operator(x) = rhs`` with GMRES.
 
@@ -83,10 +87,14 @@ def solve(
     config: Solver settings.
     x0: Optional initial guess; a natural warm start when solving a sequence of
       related systems.
+    preconditioner: Optional callable ``P ~ operator^{-1}``, applied on the
+      *right*; see `_right_preconditioned`.
 
   Returns:
     The solution.
   """
+  if preconditioner is not None:
+    return _right_preconditioned(operator, rhs, config, x0, preconditioner)
   solution, _ = jax.scipy.sparse.linalg.gmres(
     operator,
     rhs,
@@ -100,8 +108,42 @@ def solve(
   return solution
 
 
+def _right_preconditioned(
+  operator, rhs: Array, config: GmresConfig, x0: Array | None, preconditioner
+) -> Array:
+  """GMRES on ``operator(P y) = rhs - operator(x0)``, returning ``x0 + P y``.
+
+  Right rather than left preconditioning, deliberately.  The `M` argument of
+  `jax.scipy.sparse.linalg.gmres` preconditions on the left and stops on
+  ``||M r||``, which is not the residual `solve_with_info` measures: with the
+  sparsifying preconditioner it stopped at a true residual of 2.3e-6 when 1e-6
+  was asked for.  On the right, the residual GMRES minimises *is* the true one.
+
+  A warm start enters as a correction, ``x = x0 + P y``, which needs no inverse
+  of ``P``.  The stopping test stays relative to ``||rhs||``, not to the smaller
+  initial residual, so a warm start buys iterations rather than accuracy.
+  """
+  residual = rhs if x0 is None else rhs - operator(x0)
+  atol = jnp.maximum(config.atol, config.tol * jnp.linalg.norm(rhs))
+  correction, _ = jax.scipy.sparse.linalg.gmres(
+    lambda y: operator(preconditioner(y)),
+    residual,
+    tol=0.0,
+    atol=atol,
+    restart=config.restart,
+    maxiter=config.maxiter,
+    solve_method=config.solve_method,
+  )
+  solution = preconditioner(correction)
+  return solution if x0 is None else x0 + solution
+
+
 def solve_with_info(
-  operator, rhs: Array, config: GmresConfig, x0: Array | None = None
+  operator,
+  rhs: Array,
+  config: GmresConfig,
+  x0: Array | None = None,
+  preconditioner=None,
 ) -> tuple[Array, SolveInfo]:
   """Solve ``operator(x) = rhs`` and report whether it converged.
 
@@ -113,11 +155,12 @@ def solve_with_info(
     rhs: The right-hand side.
     config: Solver settings.
     x0: Optional initial guess.
+    preconditioner: Optional right preconditioner; see `solve`.
 
   Returns:
     A tuple of (solution, `SolveInfo`).
   """
-  solution = solve(operator, rhs, config, x0)
+  solution = solve(operator, rhs, config, x0, preconditioner)
 
   rhs_norm = jnp.linalg.norm(rhs)
   residual = jnp.linalg.norm(operator(solution) - rhs)
@@ -245,6 +288,7 @@ def block_solve(
   rhs: Array,
   config: BlockGmresConfig = BlockGmresConfig(),
   x0: Array | None = None,
+  preconditioner=None,
 ) -> Array:
   """Solve ``operator(X) = rhs`` for every column of `rhs` simultaneously.
 
@@ -253,10 +297,20 @@ def block_solve(
     rhs: Right-hand sides, of shape ``(n, p)``.
     config: Block solver settings.
     x0: Optional initial guess of the same shape.
+    preconditioner: Optional right preconditioner acting on a whole ``(n, p)``
+      block, as in `solve`.
 
   Returns:
     The solution block, of shape ``(n, p)``.
   """
+  if preconditioner is not None:
+    residual = rhs if x0 is None else rhs - operator(x0)
+    correction = block_solve(
+      lambda y: operator(preconditioner(y)), residual, config
+    )
+    solution = preconditioner(correction)
+    return solution if x0 is None else x0 + solution
+
   solution = jnp.zeros_like(rhs) if x0 is None else x0
   for _ in range(config.cycles):
     solution = _block_gmres_cycle(operator, rhs, solution, config)
@@ -268,6 +322,7 @@ def block_solve_with_info(
   rhs: Array,
   config: BlockGmresConfig = BlockGmresConfig(),
   x0: Array | None = None,
+  preconditioner=None,
 ) -> tuple[Array, SolveInfo]:
   """Solve a block system and report the Frobenius-norm relative residual.
 
@@ -276,11 +331,12 @@ def block_solve_with_info(
     rhs: Right-hand sides, of shape ``(n, p)``.
     config: Block solver settings.
     x0: Optional initial guess.
+    preconditioner: Optional right preconditioner on blocks.
 
   Returns:
     A tuple of (solution block, `SolveInfo`).
   """
-  solution = block_solve(operator, rhs, config, x0)
+  solution = block_solve(operator, rhs, config, x0, preconditioner)
 
   rhs_norm = jnp.linalg.norm(rhs)
   residual = jnp.linalg.norm(operator(solution) - rhs)
