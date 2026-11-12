@@ -9,6 +9,7 @@ from .solvers import (
   block_solve,
   block_solve_with_info,
 )
+from .nd_solver import NDFactor, NDStructure
 from .sparsify import SparsifyingStencils
 from .filters import band_dimension, band_index, band_limit, band_mask
 from .losses import (
@@ -102,6 +103,8 @@ __all__ = [
   "preconditioner_for",
   "with_sparsifying_preconditioner",
   "SparsifyingStencils",
+  "NDFactor",
+  "NDStructure",
   "make_near_field_params",
   # Kernels and operators.
   "fourier_green_function",

@@ -65,16 +65,18 @@ def gmres_iterations(params, nu, precondition=True, nu_factor=None, budget=400):
     budget: Maximum iterations (no restarts).
   """
   n_dof = params.n_dof
-  apply_A = jax.jit(lambda v: jax_ls.apply_lipp_schwin(params, nu, v))
-  P = None
+  apply_operator = jax.jit(lambda v: jax_ls.apply_lipp_schwin(params, nu, v))
+  apply_precond = None
   if precondition:
-    P = jax.jit(
+    apply_precond = jax.jit(
       jax_ls.preconditioner_for(params, nu if nu_factor is None else nu_factor)
     )
 
   def matvec(y):
     y = jnp.asarray(y)
-    return np.array(apply_A(P(y) if P is not None else y))  # writable copy
+    return np.array(
+      apply_operator(apply_precond(y) if apply_precond is not None else y)
+    )  # writable copy
 
   b = np.random.default_rng(0).standard_normal(n_dof) + 0j
   count = [0]
@@ -87,8 +89,10 @@ def gmres_iterations(params, nu, precondition=True, nu_factor=None, budget=400):
     callback=lambda _: count.__setitem__(0, count[0] + 1),
     callback_type="pr_norm",
   )
-  x = jnp.asarray(y) if P is None else P(jnp.asarray(y))
-  residual = np.linalg.norm(np.asarray(apply_A(x)) - b) / np.linalg.norm(b)
+  x = jnp.asarray(y) if apply_precond is None else apply_precond(jnp.asarray(y))
+  residual = np.linalg.norm(np.asarray(apply_operator(x)) - b) / np.linalg.norm(
+    b
+  )
   return count[0], residual
 
 

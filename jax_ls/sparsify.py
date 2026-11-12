@@ -62,6 +62,7 @@ import hashlib
 import itertools
 import threading
 from dataclasses import dataclass
+from collections.abc import Callable
 from functools import partial
 
 import numpy as np
@@ -73,8 +74,10 @@ import jax.numpy as jnp
 
 from flax import struct
 
+from . import nd_solver
 from .domain import Domain
 from .kernels import GreenKernel
+from .nd_solver import NDFactor, NDStructure
 
 Array = jax.Array
 
@@ -86,6 +89,34 @@ OFFSETS = tuple((dy, dx) for dy in (-1, 0, 1) for dx in (-1, 0, 1))
 
 # Default number of factorisations kept on the host.
 DEFAULT_CACHE_SIZE = 4
+
+# How ``M`` is factored and solved.
+#   "superlu"       -- SciPy's SuperLU on the host, through `jax.pure_callback`,
+#                      cached on the contrast.  Best on CPU.
+#   "block_inverse" -- `jax_ls.nd_solver`: nested dissection with inverted fronts,
+#                      factored and solved in `jax.numpy`.  The solve is batched
+#                      GEMMs, so it stays on the device; meant for accelerators.
+#   "auto"          -- "block_inverse" when JAX's default backend is not the CPU.
+BACKENDS = ("superlu", "block_inverse")
+
+_STRUCTURES: dict[tuple[int, int, int], NDStructure] = {}
+
+
+def _structure(m: int, n: int, leaf: int) -> NDStructure:
+  """The symbolic analysis of a grid, shared across frequencies.
+
+  Args:
+    m: Number of rows.
+    n: Number of columns.
+    leaf: Leaf size of the dissection tree.
+
+  Returns:
+    The cached `NDStructure`, built on first use.
+  """
+  if (m, n, leaf) not in _STRUCTURES:
+    _STRUCTURES[m, n, leaf] = NDStructure.create(m, n, leaf)
+  return _STRUCTURES[m, n, leaf]
+
 
 # Partial-pivoting threshold of the factorisation.  SuperLU pivots off the
 # diagonal only when the diagonal entry is smaller than this fraction of the
@@ -99,7 +130,8 @@ def nested_dissection(m: int, n: int, leaf: int = 8) -> np.ndarray:
 
   Splits the longer side by a one-line separator, recursively, and numbers the
   separator after both halves.  With 9-point coupling a single line separates,
-  so this is the ordering Ying's ``O(N^1.5)`` factorisation cost assumes.
+  so this is the ordering Ying's ``O(N^1.5)`` factorisation cost assumes.  The
+  same tree drives `jax_ls.nd_solver`.
 
   Measured at n = 255 (and 511) against SuperLU's own orderings: factorisation
   0.5 s (6.8 s) against 1.5-5 s (11-16 s) for COLAMD and 59 s for
@@ -113,25 +145,7 @@ def nested_dissection(m: int, n: int, leaf: int = 8) -> np.ndarray:
   Returns:
     A permutation of ``range(m * n)``: position ``i`` holds the old index.
   """
-  order = []
-
-  def split(block):
-    rows, cols = block.shape
-    if rows * cols <= leaf * leaf:
-      order.append(block.ravel())
-    elif cols >= rows:
-      mid = cols // 2
-      split(block[:, :mid])
-      split(block[:, mid + 1 :])
-      order.append(block[:, mid])
-    else:
-      mid = rows // 2
-      split(block[:mid])
-      split(block[mid + 1 :])
-      order.append(block[mid])
-
-  split(np.arange(m * n).reshape((m, n)))
-  return np.concatenate(order)
+  return nd_solver.nested_dissection(m, n, leaf)
 
 
 class _PermutedLU:
@@ -142,16 +156,31 @@ class _PermutedLU:
   transpose: the same two index shuffles serve all three.
   """
 
-  def __init__(self, M: sps.csr_matrix, perm: np.ndarray):
+  def __init__(self, matrix: sps.csr_matrix, perm: np.ndarray):
+    """Factor a matrix in a given symmetric order.
+
+    Args:
+      matrix: The sparse matrix ``M``.
+      perm: Elimination order, as from `nested_dissection`.
+    """
     self.perm = perm
     self.lu = spla.splu(
-      M[perm][:, perm].tocsc(),
+      matrix[perm][:, perm].tocsc(),
       permc_spec="NATURAL",
       diag_pivot_thresh=PIVOT_THRESHOLD,
       options=dict(SymmetricMode=True),
     )
 
   def solve(self, b: np.ndarray, trans: str = "N") -> np.ndarray:
+    """Solve ``op(M) x = b``.
+
+    Args:
+      b: Right-hand sides, ``(N,)`` or ``(N, p)``.
+      trans: ``"N"``, ``"T"`` or ``"H"`` for ``M``, ``M^T`` or ``M^H``.
+
+    Returns:
+      The solution, of the shape of `b`.
+    """
     permuted = self.lu.solve(np.ascontiguousarray(b[self.perm]), trans=trans)
     x = np.empty_like(permuted)
     x[self.perm] = permuted
@@ -159,7 +188,15 @@ class _PermutedLU:
 
 
 def _stencil_type(index: int, size: int) -> int:
-  """0 on the low boundary, 1 inside, 2 on the high boundary."""
+  """Classify a grid index along one axis.
+
+  Args:
+    index: Position along the axis.
+    size: Number of points along the axis.
+
+  Returns:
+    0 on the low boundary, 1 inside, 2 on the high boundary.
+  """
   if index == 0:
     return 0
   if index == size - 1:
@@ -168,14 +205,30 @@ def _stencil_type(index: int, size: int) -> int:
 
 
 def _valid_offsets(domain: Domain, iy: int, ix: int) -> np.ndarray:
-  """Which of `OFFSETS` stay on the grid around the point (iy, ix)."""
+  """Which of `OFFSETS` stay on the grid around one point.
+
+  Args:
+    domain: The grid.
+    iy: Row of the point.
+    ix: Column of the point.
+
+  Returns:
+    A boolean array of length 9.
+  """
   return np.array(
     [0 <= iy + dy < domain.m and 0 <= ix + dx < domain.n for dy, dx in OFFSETS]
   )
 
 
 def _valid_mask(domain: Domain) -> np.ndarray:
-  """``(9, m, n)``: whether each offset stays on the grid at each point."""
+  """Whether each offset stays on the grid, at every point.
+
+  Args:
+    domain: The grid.
+
+  Returns:
+    A boolean array of shape ``(9, m, n)``.
+  """
   iy = np.arange(domain.m)[:, None]
   ix = np.arange(domain.n)[None, :]
   return np.stack(
@@ -216,7 +269,17 @@ def apply_stencil(domain: Domain, coefficients: Array, v: Array) -> Array:
 def apply_stencil_transpose(
   domain: Domain, coefficients: Array, w: Array
 ) -> Array:
-  """``S^T w``, the (non-conjugated) transpose of `apply_stencil`."""
+  """``S^T w``, the (non-conjugated) transpose of `apply_stencil`.
+
+  Args:
+    domain: The grid.
+    coefficients: Stencil weights, of shape ``(9, m, n)``, zero wherever the
+      neighbour falls off the grid.
+    w: A flat field.
+
+  Returns:
+    The flat field ``S^T w``.
+  """
   m, n = domain.shape
   w = w.reshape((m, n))
   out = 0.0
@@ -231,22 +294,37 @@ def apply_stencil_transpose(
 # ---------------------------------------------------------------------------
 @dataclass
 class _HostEntry:
-  """What the host keeps for one set of stencils."""
+  """What the host keeps for one set of stencils.
 
-  A: sps.csr_matrix
-  C: sps.csr_matrix
+  Args:
+    stencil_matrix: ``Acal`` as a CSR matrix.
+    local_matrix: ``C`` as a CSR matrix.
+    refactor_rtol: Relative distance within which a cached factorisation is
+      reused for a new contrast.
+    perm: Nested-dissection elimination order of the grid.
+  """
+
+  stencil_matrix: sps.csr_matrix
+  local_matrix: sps.csr_matrix
   refactor_rtol: float
   perm: np.ndarray
 
 
 @dataclass
 class _Factor:
-  """One cached factorisation."""
+  """One cached factorisation.
+
+  Args:
+    key: Handle of the stencils it was built from.
+    nu: The contrast it was built for.
+    omega: The frequency it was built for.
+    lu: The factorisation.
+  """
 
   key: int
   nu: np.ndarray
   omega: float
-  lu: object
+  lu: _PermutedLU
 
 
 class _Registry:
@@ -257,6 +335,11 @@ class _Registry:
   """
 
   def __init__(self, cache_size: int = DEFAULT_CACHE_SIZE):
+    """An empty registry.
+
+    Args:
+      cache_size: How many factorisations to keep.
+    """
     self._lock = threading.Lock()
     self._counter = itertools.count()
     self.entries: dict[int, _HostEntry] = {}
@@ -265,13 +348,30 @@ class _Registry:
     self.stats = collections.Counter()
 
   def register(self, entry: _HostEntry) -> int:
+    """Store the matrices of one set of stencils.
+
+    Args:
+      entry: What to keep.
+
+    Returns:
+      The handle under which it is kept.
+    """
     with self._lock:
       key = next(self._counter)
       self.entries[key] = entry
       return key
 
-  def factor(self, key: int, omega: float, nu: np.ndarray):
-    """The LU for (stencils, omega, nu), from the cache when possible."""
+  def factor(self, key: int, omega: float, nu: np.ndarray) -> _PermutedLU:
+    """The factorisation of ``M`` for one set of stencils and one contrast.
+
+    Args:
+      key: Handle of the stencils.
+      omega: Angular frequency.
+      nu: Flat contrast.
+
+    Returns:
+      The factorisation, from the cache when possible.
+    """
     digest = hashlib.blake2b(
       np.ascontiguousarray(nu).tobytes() + np.float64(omega).tobytes(),
       digest_size=16,
@@ -293,8 +393,10 @@ class _Registry:
             self.stats["reuses"] += 1
             return cached.lu
 
-      M = (-entry.A + omega**2 * (entry.C @ sps.diags(nu))).tocsr()
-      lu = _PermutedLU(M, entry.perm)
+      matrix = -entry.stencil_matrix + omega**2 * (
+        entry.local_matrix @ sps.diags(nu)
+      )
+      lu = _PermutedLU(matrix.tocsr(), entry.perm)
       self.stats["factorizations"] += 1
       self.factors[cache_key] = _Factor(key, np.array(nu), omega, lu)
       while len(self.factors) > self.cache_size:
@@ -306,7 +408,12 @@ _REGISTRY = _Registry()
 
 
 def factorization_stats() -> dict[str, int]:
-  """Counts of factorisations, cache hits and tolerance-based reuses."""
+  """How the host cache has been used.
+
+  Returns:
+    Counts of ``"factorizations"``, cache ``"hits"`` and tolerance-based
+    ``"reuses"``.
+  """
   return dict(_REGISTRY.stats)
 
 
@@ -318,7 +425,14 @@ def clear_factorizations() -> None:
 
 
 def set_cache_size(size: int) -> None:
-  """How many factorisations to keep; each costs ``O(N log N)`` memory."""
+  """Set how many factorisations to keep; each costs ``O(N log N)`` memory.
+
+  Args:
+    size: The new capacity; the oldest entries beyond it are dropped.
+
+  Raises:
+    ValueError: If `size` is smaller than one.
+  """
   if size < 1:
     raise ValueError(
       f"the cache must hold at least one factorisation, got {size}"
@@ -329,13 +443,29 @@ def set_cache_size(size: int) -> None:
       _REGISTRY.factors.popitem(last=False)
 
 
-def _host_solve(trans: str, key, omega, nu, rhs):
+def _host_solve(
+  trans: str,
+  key: np.ndarray,
+  omega: np.ndarray,
+  nu: np.ndarray,
+  rhs: np.ndarray,
+) -> np.ndarray:
   """Solve ``M x = rhs`` (or transposed) on the host.
 
   Called through `jax.pure_callback` with ``vmap_method="expand_dims"``, so
   every argument may carry leading batch dimensions, of size one when it is not
   batched.  The common case -- one contrast, many sources -- becomes a single
   SuperLU solve with a block right-hand side.
+
+  Args:
+    trans: ``"N"``, ``"T"`` or ``"H"``.
+    key: Handle of the stencils.
+    omega: Angular frequency.
+    nu: Contrast, ``(..., N)``.
+    rhs: Right-hand sides, ``(..., N)``.
+
+  Returns:
+    The solutions, of the broadcast shape of `nu` and `rhs`.
   """
   key = int(np.ravel(key)[0])
   omega = float(np.ravel(omega)[0])
@@ -372,7 +502,7 @@ def _host_solve(trans: str, key, omega, nu, rhs):
 class SparsifyingStencils:
   """The ``nu``-independent part of the preconditioner, for one frequency.
 
-  Attributes:
+  Args:
     domain: The grid.
     alpha: Weights of ``Acal``, of shape ``(9, m, n)``, zero off the grid.
     local: Weights of ``C ~ Acal G`` on the same pattern, of shape
@@ -383,6 +513,9 @@ class SparsifyingStencils:
       field the stencil fails to annihilate; small is good.
     key: Handle of the assembled matrices on the host.  A leaf rather than a
       static field so that changing frequency does not force a recompile.
+    structure: The nested-dissection analysis of the grid, for the
+      ``"block_inverse"`` backend; None otherwise.
+    backend: How ``M`` is factored; see `BACKENDS`.
   """
 
   domain: Domain
@@ -390,10 +523,16 @@ class SparsifyingStencils:
   local: Array
   quality: Array
   key: Array
+  structure: NDStructure | None = None
+  backend: str = struct.field(pytree_node=False, default="superlu")
 
   @classmethod
   def create(
-    cls, kernel: GreenKernel, refactor_rtol: float = 0.0
+    cls,
+    kernel: GreenKernel,
+    refactor_rtol: float = 0.0,
+    backend: str = "auto",
+    leaf: int = nd_solver.DEFAULT_LEAF,
   ) -> "SparsifyingStencils":
     """Build the stencils for a kernel.
 
@@ -405,14 +544,24 @@ class SparsifyingStencils:
       kernel: The truncated Green's kernel of one frequency.
       refactor_rtol: Reuse a cached factorisation for any contrast within this
         relative distance of the one it was built for.  0 refactors for every
-        new contrast.  See `jax_ls.sparsify`.
+        new contrast.  ``"superlu"`` backend only.  See `jax_ls.sparsify`.
+      backend: ``"superlu"``, ``"block_inverse"`` or ``"auto"``; see
+        `BACKENDS`.
+      leaf: Leaf size of the dissection tree, ``"block_inverse"`` only.
 
     Returns:
       The stencils, with their matrices registered on the host.
 
     Raises:
-      ValueError: If the grid has fewer than three points along an axis.
+      ValueError: If the grid has fewer than three points along an axis, or
+        the backend is unknown.
     """
+    if backend == "auto":
+      backend = "superlu" if jax.default_backend() == "cpu" else "block_inverse"
+    if backend not in BACKENDS:
+      raise ValueError(
+        f"backend must be one of {BACKENDS} or 'auto', got {backend!r}"
+      )
     domain = kernel.domain
     m, n = domain.shape
     if m < 3 or n < 3:
@@ -462,8 +611,8 @@ class SparsifyingStencils:
 
     key = _REGISTRY.register(
       _HostEntry(
-        A=_assemble(domain, alpha),
-        C=_assemble(domain, local),
+        stencil_matrix=_assemble(domain, alpha),
+        local_matrix=_assemble(domain, local),
         refactor_rtol=float(refactor_rtol),
         perm=nested_dissection(m, n),
       )
@@ -474,25 +623,53 @@ class SparsifyingStencils:
       local=jnp.asarray(local, dtype=dtype),
       quality=jnp.asarray(quality),
       key=jnp.asarray(key, dtype=jnp.int32),
+      structure=_structure(m, n, leaf) if backend == "block_inverse" else None,
+      backend=backend,
     )
 
   # -- the sparse matrices, for inspection and tests ------------------------
   def matrices(self) -> tuple[sps.csr_matrix, sps.csr_matrix]:
-    """``(Acal, C)`` as SciPy CSR matrices."""
-    entry = _REGISTRY.entries[int(self.key)]
-    return entry.A, entry.C
+    """The assembled stencil matrices.
 
-  def apply_A(self, v: Array) -> Array:
-    """``Acal v``."""
+    Returns:
+      ``(Acal, C)`` as SciPy CSR matrices.
+    """
+    entry = _REGISTRY.entries[int(self.key)]
+    return entry.stencil_matrix, entry.local_matrix
+
+  def apply_alpha(self, v: Array) -> Array:
+    """Apply ``Acal``.
+
+    Args:
+      v: A flat field.
+
+    Returns:
+      ``Acal v``.
+    """
     return apply_stencil(self.domain, self.alpha, v)
 
-  def apply_C(self, v: Array) -> Array:
-    """``C v``."""
+  def apply_local(self, v: Array) -> Array:
+    """Apply ``C``.
+
+    Args:
+      v: A flat field.
+
+    Returns:
+      ``C v``.
+    """
     return apply_stencil(self.domain, self.local, v)
 
 
 def _assemble(domain: Domain, coefficients: np.ndarray) -> sps.csr_matrix:
-  """The CSR matrix of a 9-point stencil field."""
+  """Assemble a 9-point stencil field as a sparse matrix.
+
+  Args:
+    domain: The grid.
+    coefficients: Stencil weights, ``(9, m, n)``.
+
+  Returns:
+    The ``N x N`` CSR matrix with ``M[p, p + o_k] = coefficients[k, p]``.
+  """
   m, n = domain.shape
   valid = _valid_mask(domain)
   points = np.arange(m * n).reshape((m, n))
@@ -511,44 +688,201 @@ def _assemble(domain: Domain, coefficients: np.ndarray) -> sps.csr_matrix:
 # ---------------------------------------------------------------------------
 # The preconditioner.
 # ---------------------------------------------------------------------------
-def _apply_inverse_MT(
-  stencils: SparsifyingStencils, omega, nu: Array, r: Array
+def matrix_coefficients(
+  stencils: SparsifyingStencils, omega: float | Array, nu: Array
 ) -> Array:
-  """``M^{-T} r`` with ``M = -Acal + omega^2 C D_nu``."""
+  """The 9-point field of ``M = -Acal + omega^2 C D_nu``.
+
+  ``M[p, p + o_k] = -alpha[k, p] + omega^2 local[k, p] nu[p + o_k]``.
+
+  Args:
+    stencils: The sparsifying stencils of this frequency.
+    omega: Angular frequency.
+    nu: Flat contrast.
+
+  Returns:
+    An array of shape ``(9, m, n)``.
+  """
+  m, n = stencils.domain.shape
+  padded = jnp.pad(jnp.reshape(nu, (m, n)), 1)
+  shifted = jnp.stack(
+    [padded[1 + dy : 1 + dy + m, 1 + dx : 1 + dx + n] for dy, dx in OFFSETS]
+  )
+  return -stencils.alpha + omega**2 * stencils.local * shifted
+
+
+def factor_matrix(
+  stencils: SparsifyingStencils, omega: float | Array, nu: Array
+) -> NDFactor:
+  """The ``"block_inverse"`` factorisation of ``M`` at a contrast.
+
+  Exposed for inspection: `NDFactor.growth` and `NDFactor.pivot_ratio` report
+  how well the per-front pivoting did.  Works whatever the backend of
+  `stencils`.
+
+  Args:
+    stencils: The sparsifying stencils of this frequency.
+    omega: Angular frequency.
+    nu: Flat contrast.
+
+  Returns:
+    The factorisation of ``M``.
+  """
+  structure = stencils.structure
+  if structure is None:
+    structure = _structure(*stencils.domain.shape, nd_solver.DEFAULT_LEAF)
+  return nd_solver.factorize(
+    structure, matrix_coefficients(stencils, omega, nu)
+  )
+
+
+def _inverse_mt(
+  stencils: SparsifyingStencils, omega: float | Array, nu: Array
+) -> Callable[[Array], Array]:
+  """``r -> M^{-T} r`` with ``M = -Acal + omega^2 C D_nu``.
+
+  The factorisation, when it is done in JAX, happens here -- once -- and the
+  returned callable closes over it; GMRES then applies it as a loop invariant.
+
+  Args:
+    stencils: The sparsifying stencils of this frequency.
+    omega: Angular frequency.
+    nu: Flat contrast.
+
+  Returns:
+    A callable applying ``M^{-T}``, differentiable and transposable through
+    `jax.lax.custom_linear_solve`.
+  """
   domain = stencils.domain
-  # The callback only ever receives constants: derivatives with respect to the
+  # The solver only ever receives constants: derivatives with respect to the
   # contrast come from `matvec`, which `custom_linear_solve` differentiates.
   key, omega_c, nu_c = jax.lax.stop_gradient((stencils.key, omega, nu))
-  omega_c = jnp.asarray(omega_c, dtype=float)
 
-  def matvec(v):  # M^T v = -Acal^T v + omega^2 D_nu C^T v
+  def matvec(v: Array) -> Array:
+    """Apply ``M^T = -Acal^T + omega^2 D_nu C^T`` in `jax.numpy`.
+
+    Args:
+      v: A flat vector.
+
+    Returns:
+      ``M^T v``.
+    """
     return -apply_stencil_transpose(
       domain, stencils.alpha, v
     ) + omega**2 * nu * apply_stencil_transpose(domain, stencils.local, v)
 
-  def host(trans):
-    def solve(_, b):
-      return jax.pure_callback(
-        partial(_host_solve, trans),
-        jax.ShapeDtypeStruct(b.shape, b.dtype),
-        key,
-        omega_c,
-        nu_c,
-        b,
-        vmap_method="expand_dims",
-      )
+  if stencils.backend == "block_inverse":
+    factor = nd_solver.factorize(
+      stencils.structure, matrix_coefficients(stencils, omega_c, nu_c)
+    )
 
-    return solve
+    def device(mode: str) -> Callable:
+      """A `custom_linear_solve` solver applying ``op(M)^{-1}`` on device.
 
-  return jax.lax.custom_linear_solve(
-    matvec, r, solve=host("T"), transpose_solve=host("N")
+      Args:
+        mode: ``"N"`` or ``"T"``.
+
+      Returns:
+        A function of ``(matvec, b)`` that ignores `matvec`.
+      """
+      return lambda _, b: nd_solver.solve(factor, b, mode)
+
+    solve, transpose_solve = device("T"), device("N")
+  else:
+    omega_c = jnp.asarray(omega_c, dtype=float)
+
+    def host(trans: str) -> Callable:
+      """A `custom_linear_solve` solver applying ``op(M)^{-1}`` on the host.
+
+      Args:
+        trans: ``"N"`` or ``"T"``.
+
+      Returns:
+        A function of ``(matvec, b)`` that ignores `matvec`.
+      """
+
+      def solve(_: Callable, b: Array) -> Array:
+        """Solve ``op(M) x = b`` through `jax.pure_callback`.
+
+        Args:
+          _: The mat-vec `custom_linear_solve` passes; unused.
+          b: Right-hand side.
+
+        Returns:
+          The solution.
+        """
+        return jax.pure_callback(
+          partial(_host_solve, trans),
+          jax.ShapeDtypeStruct(b.shape, b.dtype),
+          key,
+          omega_c,
+          nu_c,
+          b,
+          vmap_method="expand_dims",
+        )
+
+      return solve
+
+    solve, transpose_solve = host("T"), host("N")
+
+  return lambda r: jax.lax.custom_linear_solve(
+    matvec, r, solve=solve, transpose_solve=transpose_solve
   )
 
 
+def preconditioner(
+  stencils: SparsifyingStencils,
+  omega: float | Array,
+  nu: Array,
+  adjoint: bool = False,
+) -> Callable[[Array], Array]:
+  """The preconditioner as a callable, ready for `jax_ls.solvers.solve`.
+
+  ``P = Acal^T M^{-T}`` approximates the inverse of ``-I + omega^2 D_nu G``.
+  With `adjoint`, the inverse of ``-I + omega^2 D_nu G^H = conj(A(conj nu))``
+  is approximated by ``conj(P_{conj nu}(conj r))`` -- for a real contrast, the
+  same factorisation as the forward one.
+
+  Any factorisation in JAX is done once, here, not on every application.
+
+  Args:
+    stencils: The sparsifying stencils of this frequency.
+    omega: Angular frequency.
+    nu: Flat contrast.
+    adjoint: Precondition the adjoint-like operator instead.
+
+  Returns:
+    A callable applying the preconditioner to a flat vector.
+  """
+  if adjoint:
+    forward = preconditioner(stencils, omega, jnp.conj(nu))
+    return lambda r: jnp.conj(forward(jnp.conj(r)))
+
+  inverse = _inverse_mt(stencils, omega, nu)
+
+  def apply(r: Array) -> Array:
+    """Apply ``P = Acal^T M^{-T}``.
+
+    Args:
+      r: A flat vector.
+
+    Returns:
+      ``P r``.
+    """
+    r = jnp.asarray(r)
+    r = r.astype(jnp.result_type(r.dtype, stencils.alpha.dtype))
+    return apply_stencil_transpose(stencils.domain, stencils.alpha, inverse(r))
+
+  return apply
+
+
 def apply_preconditioner(
-  stencils: SparsifyingStencils, omega, nu: Array, r: Array
+  stencils: SparsifyingStencils, omega: float | Array, nu: Array, r: Array
 ) -> Array:
   """``P r = Acal^T M^{-T} r``, an approximate inverse of ``-I + omega^2 D_nu G``.
+
+  Builds the preconditioner for this one application; to apply it repeatedly,
+  call `preconditioner` once instead.
 
   Args:
     stencils: The sparsifying stencils of this frequency.
@@ -559,30 +893,21 @@ def apply_preconditioner(
   Returns:
     ``P r``.
   """
-  r = jnp.asarray(r)
-  dtype = jnp.result_type(r.dtype, stencils.alpha.dtype)
-  r = r.astype(dtype)
-  return apply_stencil_transpose(
-    stencils.domain, stencils.alpha, _apply_inverse_MT(stencils, omega, nu, r)
-  )
+  return preconditioner(stencils, omega, nu)(r)
 
 
 def apply_preconditioner_adjoint(
-  stencils: SparsifyingStencils, omega, nu: Array, r: Array
+  stencils: SparsifyingStencils, omega: float | Array, nu: Array, r: Array
 ) -> Array:
-  """Approximate inverse of ``-I + omega^2 D_nu G^H``.
+  """Approximate inverse of ``-I + omega^2 D_nu G^H``; see `preconditioner`.
 
-  That operator is ``conj(A(conj nu))``, so this is ``conj(P_{conj nu}(conj
-  r))`` -- for a real contrast, the same factorisation as the forward one.
+  Args:
+    stencils: The sparsifying stencils of this frequency.
+    omega: Angular frequency.
+    nu: Flat contrast.
+    r: Flat vector.
+
+  Returns:
+    The preconditioned vector.
   """
-  return jnp.conj(
-    apply_preconditioner(stencils, omega, jnp.conj(nu), jnp.conj(r))
-  )
-
-
-def preconditioner(
-  stencils: SparsifyingStencils, omega, nu: Array, adjoint: bool = False
-):
-  """The preconditioner as a callable, ready for `jax_ls.solvers.solve`."""
-  apply = apply_preconditioner_adjoint if adjoint else apply_preconditioner
-  return partial(apply, stencils, omega, nu)
+  return preconditioner(stencils, omega, nu, adjoint=True)(r)

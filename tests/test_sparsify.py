@@ -81,16 +81,16 @@ def _rel(a, b):
 class TestPremise:
   def test_green_operator_is_complex_symmetric(self, dense):
     """``G^T = G``: the reason ``A^T`` is Ying's field-form operator."""
-    _, G = dense
-    assert np.linalg.norm(G - G.T) <= 1e-12 * np.linalg.norm(G)
+    _, green = dense
+    assert np.linalg.norm(green - green.T) <= 1e-12 * np.linalg.norm(green)
 
   def test_green_operator_is_toeplitz(self, dense):
     """Translation invariance: why nine stencil types suffice."""
-    params, G = dense
+    params, green = dense
     n = params.domain.n
     p, q = 5 * n + 5, 9 * n + 7
     shift = 2 * n + 3
-    assert np.isclose(G[p, q], G[p + shift, q + shift], rtol=1e-12)
+    assert np.isclose(green[p, q], green[p + shift, q + shift], rtol=1e-12)
 
 
 # ---------------------------------------------------------------------------
@@ -101,8 +101,8 @@ class TestStencilApplication:
   def test_apply_matches_assembled_matrix(self, rect, which):
     params, _ = rect
     st = params.sparsifier
-    A, C = st.matrices()
-    matrix = A if which == "alpha" else C
+    stencil, local = st.matrices()
+    matrix = stencil if which == "alpha" else local
     v = jax.random.normal(jax.random.PRNGKey(0), (params.n_dof,)) + 0j
     got = sparsify.apply_stencil(st.domain, getattr(st, which), v)
     assert _rel(got, matrix @ np.asarray(v)) < 1e-13
@@ -111,8 +111,8 @@ class TestStencilApplication:
   def test_transpose_matches_assembled_matrix(self, rect, which):
     params, _ = rect
     st = params.sparsifier
-    A, C = st.matrices()
-    matrix = A if which == "alpha" else C
+    stencil, local = st.matrices()
+    matrix = stencil if which == "alpha" else local
     w = jax.random.normal(jax.random.PRNGKey(1), (params.n_dof,)) + 0j
     got = sparsify.apply_stencil_transpose(st.domain, getattr(st, which), w)
     assert _rel(got, matrix.T @ np.asarray(w)) < 1e-13
@@ -139,9 +139,9 @@ class TestStencilApplication:
   def test_pattern_is_nine_point(self, rect):
     params, _ = rect
     m, n = params.shape
-    A, C = params.sparsifier.matrices()
+    stencil, local = params.sparsifier.matrices()
     expected = (3 * m - 2) * (3 * n - 2)  # neighbours that exist, summed
-    assert A.nnz == expected and C.nnz == expected
+    assert stencil.nnz == expected and local.nnz == expected
 
 
 # ---------------------------------------------------------------------------
@@ -155,25 +155,25 @@ class TestSparsification:
     This is the test the Julia reference implementation would fail on its
     edges and corners, whose stencil and local blocks were ordered differently.
     """
-    params, G = request.getfixturevalue(fixture)
-    A, C = params.sparsifier.matrices()
-    AG = A @ G
-    pattern = (A != 0).toarray()
+    params, green = request.getfixturevalue(fixture)
+    stencil, local = params.sparsifier.matrices()
+    stencil_green = stencil @ green
+    pattern = (stencil != 0).toarray()
     assert np.linalg.norm(
-      (AG - C.toarray())[pattern]
-    ) <= 1e-10 * np.linalg.norm(AG[pattern])
+      (stencil_green - local.toarray())[pattern]
+    ) <= 1e-10 * np.linalg.norm(stencil_green[pattern])
 
   def test_far_field_is_annihilated(self, dense):
     """Off the pattern ``Acal G`` is small compared with on it."""
-    params, G = dense
-    A, _ = params.sparsifier.matrices()
-    AG = A @ G
-    pattern = (A != 0).toarray()
-    far = np.linalg.norm(AG[~pattern]) / np.sqrt((~pattern).sum())
-    near = np.linalg.norm(AG[pattern]) / np.sqrt(pattern.sum())
+    params, green = dense
+    stencil, _ = params.sparsifier.matrices()
+    stencil_green = stencil @ green
+    pattern = (stencil != 0).toarray()
+    far = np.linalg.norm(stencil_green[~pattern]) / np.sqrt((~pattern).sum())
+    near = np.linalg.norm(stencil_green[pattern]) / np.sqrt(pattern.sum())
     # Without the stencil, the same comparison on G itself is O(1).
-    raw_far = np.linalg.norm(G[~pattern]) / np.sqrt((~pattern).sum())
-    raw_near = np.linalg.norm(G[pattern]) / np.sqrt(pattern.sum())
+    raw_far = np.linalg.norm(green[~pattern]) / np.sqrt((~pattern).sum())
+    raw_near = np.linalg.norm(green[pattern]) / np.sqrt(pattern.sum())
     assert far / near < 0.05 * raw_far / raw_near
 
   def test_quality_is_reported_for_nine_types(self, dense):
@@ -215,36 +215,38 @@ class TestFactorisation:
   @pytest.mark.parametrize("trans", ["N", "T", "H"])
   def test_permuted_lu_solves_the_original_matrix(self, dense, trans):
     params, _ = dense
-    A, C = params.sparsifier.matrices()
+    stencil, local = params.sparsifier.matrices()
     nu = np.asarray(params.domain.sample(_gauss(2.0)))
-    M = (-A + OMEGA_DENSE**2 * C @ sps.diags(nu)).tocsr()
-    lu = sparsify._PermutedLU(M, sparsify.nested_dissection(*params.shape))
+    matrix = (-stencil + OMEGA_DENSE**2 * local @ sps.diags(nu)).tocsr()
+    lu = sparsify._PermutedLU(matrix, sparsify.nested_dissection(*params.shape))
     b = np.random.default_rng(0).standard_normal((params.n_dof, 3)) + 0j
-    op = {"N": M, "T": M.T, "H": M.conj().T}[trans]
+    op = {"N": matrix, "T": matrix.T, "H": matrix.conj().T}[trans]
     x = lu.solve(b, trans=trans)
     assert np.linalg.norm(op @ x - b) <= 1e-10 * np.linalg.norm(b)
 
   def test_preconditioner_is_A_transpose_M_inverse_transpose(self, dense):
     """``P = Acal^T M^{-T}`` exactly, checked densely."""
     params, _ = dense
-    A, C = params.sparsifier.matrices()
+    stencil, local = params.sparsifier.matrices()
     nu = params.domain.sample(_gauss(2.0))
-    M = (-A + OMEGA_DENSE**2 * C @ sps.diags(np.asarray(nu))).toarray()
+    matrix = (
+      -stencil + OMEGA_DENSE**2 * local @ sps.diags(np.asarray(nu))
+    ).toarray()
     r = jax.random.normal(jax.random.PRNGKey(4), (params.n_dof,)) + 0j
-    expected = A.T @ np.linalg.solve(M.T, np.asarray(r))
+    expected = stencil.T @ np.linalg.solve(matrix.T, np.asarray(r))
     got = jax_ls.preconditioner_for(params, nu)(r)
     assert _rel(got, expected) < 1e-10
 
   def test_adjoint_preconditioner_for_a_complex_contrast(self, dense):
     """``-I + w^2 D_nu G^H = conj(A(conj nu))``, also when nu is complex."""
-    params, G = dense
+    params, green = dense
     nu = params.domain.sample(_gauss(1.0)) * (1.0 + 0.3j)
     A_adj = -np.eye(params.n_dof) + OMEGA_DENSE**2 * np.asarray(nu)[:, None] * (
-      G.conj()
+      green.conj()
     )
     A_fwd_conj = np.conj(
       -np.eye(params.n_dof)
-      + OMEGA_DENSE**2 * np.conj(np.asarray(nu))[:, None] * G
+      + OMEGA_DENSE**2 * np.conj(np.asarray(nu))[:, None] * green
     )
     assert np.allclose(A_adj, A_fwd_conj)
 
@@ -255,16 +257,18 @@ class TestFactorisation:
 
   def test_preconditioner_approximates_the_inverse(self, dense):
     """``A P`` is much closer to the identity than ``-A`` is."""
-    params, G = dense
+    params, green = dense
     nu = params.domain.sample(_gauss(2.0))
-    A = -np.eye(params.n_dof) + OMEGA_DENSE**2 * np.asarray(nu)[:, None] * G
-    P = np.asarray(
+    stencil = (
+      -np.eye(params.n_dof) + OMEGA_DENSE**2 * np.asarray(nu)[:, None] * green
+    )
+    p_matrix = np.asarray(
       jax.vmap(jax_ls.preconditioner_for(params, nu), 1, 1)(
         jnp.eye(params.n_dof, dtype=jnp.complex128)
       )
     )
-    eig = np.linalg.eigvals(A @ P)
-    eig_plain = np.linalg.eigvals(-A)
+    eig = np.linalg.eigvals(stencil @ p_matrix)
+    eig_plain = np.linalg.eigvals(-stencil)
     spread = np.max(np.abs(eig - 1))
     spread_plain = np.max(np.abs(eig_plain - 1))
     assert spread < 0.5 * spread_plain
@@ -278,8 +282,8 @@ class TestCache:
     self, solver_setup
   ):
     _, params, nu, f = solver_setup
-    F = jnp.stack([f, 1j * f, f.conj()], axis=1)
-    jax.vmap(lambda b: jax_ls.ls_solver(params, nu, b), 1, 1)(F)
+    rhs_block = jnp.stack([f, 1j * f, f.conj()], axis=1)
+    jax.vmap(lambda b: jax_ls.ls_solver(params, nu, b), 1, 1)(rhs_block)
     jax_ls.ls_solver_adj(params, nu, f)
     stats = sparsify.factorization_stats()
     assert stats["factorizations"] == 1

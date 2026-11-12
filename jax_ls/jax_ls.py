@@ -155,6 +155,7 @@ def init_params(
   truncation_radius: float | None = None,
   sparsify: bool = False,
   refactor_rtol: float = 0.0,
+  sparsify_backend: str = "auto",
 ) -> LippSchwinParams:
   """Initialize the parameters for the Lippmann-Schwinger solver.
 
@@ -179,6 +180,8 @@ def init_params(
     sparsify: Attach Ying's sparsifying preconditioner to every solve.
     refactor_rtol: With `sparsify`, reuse a cached factorisation for contrasts
       within this relative distance; see `jax_ls.sparsify`.
+    sparsify_backend: With `sparsify`, how the sparse matrix is factored:
+      ``"superlu"`` (host), ``"block_inverse"`` (device) or ``"auto"``.
 
   Returns:
     A LippSchwinParams object containing the initialized parameters.
@@ -193,12 +196,17 @@ def init_params(
   )
   params = LippSchwinParams(kernel=kernel, omega=omega)
   if sparsify:
-    params = with_sparsifying_preconditioner(params, refactor_rtol)
+    params = with_sparsifying_preconditioner(
+      params, refactor_rtol, backend=sparsify_backend
+    )
   return params
 
 
 def with_sparsifying_preconditioner(
-  params: LippSchwinParams, refactor_rtol: float = 0.0
+  params: LippSchwinParams,
+  refactor_rtol: float = 0.0,
+  backend: str = "auto",
+  leaf: int | None = None,
 ) -> LippSchwinParams:
   """The same parameters, with Ying's sparsifying preconditioner attached.
 
@@ -209,13 +217,23 @@ def with_sparsifying_preconditioner(
     params: Parameters to precondition.
     refactor_rtol: Reuse a cached factorisation for contrasts within this
       relative distance of the one it was built for; 0 refactors every time the
-      contrast changes.
+      contrast changes.  ``"superlu"`` only.
+    backend: ``"superlu"`` factors on the host through a callback;
+      ``"block_inverse"`` factors and solves in JAX with `jax_ls.nd_solver`, so
+      the whole preconditioner stays on the device; ``"auto"`` picks the latter
+      on accelerators.
+    leaf: Leaf size of the dissection tree for ``"block_inverse"``.
 
   Returns:
     A copy of `params` whose solves are preconditioned.
   """
   return params.replace(
-    sparsifier=SparsifyingStencils.create(params.kernel, refactor_rtol)
+    sparsifier=SparsifyingStencils.create(
+      params.kernel,
+      refactor_rtol,
+      backend=backend,
+      **({} if leaf is None else {"leaf": leaf}),
+    )
   )
 
 
