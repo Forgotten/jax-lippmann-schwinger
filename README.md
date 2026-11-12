@@ -88,6 +88,14 @@ needs runs on the host through `jax.pure_callback`, once per contrast, and is sh
 forward and adjoint solve at that contrast. See
 [`notebooks/sparsifying_preconditioner_notebook.ipynb`](notebooks/sparsifying_preconditioner_notebook.ipynb).
 
+On accelerators, `sparsify_backend="block_inverse"` replaces SuperLU with
+`jax_ls.nd_solver`, a nested-dissection solver written in `jax.numpy` that stores every
+diagonal block already inverted. A solve is then batched GEMMs, and the factorisation, GMRES
+and gradients stay in one jitted program on the device. The factorisation is cached across
+every solve at one contrast: `linearize`, the near-field derivative rules and the loss's
+gradient each factor once. See
+[`notebooks/block_inverse_solver_notebook.ipynb`](notebooks/block_inverse_solver_notebook.ipynb).
+
 ## Organization 
 
 This repository is organized as follows: 

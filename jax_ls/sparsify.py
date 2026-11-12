@@ -411,10 +411,26 @@ def factorization_stats() -> dict[str, int]:
   """How the host cache has been used.
 
   Returns:
-    Counts of ``"factorizations"``, cache ``"hits"`` and tolerance-based
-    ``"reuses"``.
+    Counts of host ``"factorizations"``, cache ``"hits"`` and tolerance-based
+    ``"reuses"`` for the ``"superlu"`` backend, and of
+    ``"device_factorizations"`` for the ``"block_inverse"`` backend.
   """
   return dict(_REGISTRY.stats)
+
+
+def _record_device_factorization() -> None:
+  """Count one ``"block_inverse"`` factorisation, at run time.
+
+  A `jax.debug.callback`, so it counts executions of compiled code -- what
+  caching saves -- rather than traces.
+  """
+
+  def bump() -> None:
+    """Increment the counter."""
+    with _REGISTRY._lock:
+      _REGISTRY.stats["device_factorizations"] += 1
+
+  jax.debug.callback(bump)
 
 
 def clear_factorizations() -> None:
@@ -736,8 +752,66 @@ def factor_matrix(
   )
 
 
-def _inverse_mt(
+@struct.dataclass
+class PreconditionerFactors:
+  """Factorisations of ``M`` kept for reuse across solves at one contrast.
+
+  Every solve built on a ``"block_inverse"`` preconditioner factors ``M`` from
+  the contrast it is given.  When several solves share a contrast -- the
+  forward and tangent solves of a JVP, the forward and adjoint solves of a
+  gradient, every ``J`` and ``J^H`` application of a Gauss-Newton step -- this
+  object lets them share one factorisation instead.  It must have been built
+  for the very contrast it is used with; nothing checks.
+
+  Args:
+    forward: Factorisation of ``M(nu)``, for the forward operator.
+    adjoint: Factorisation of ``M(conj nu)``, for the adjoint-like operator.
+      The same object as `forward` when the contrast is real.
+  """
+
+  forward: NDFactor
+  adjoint: NDFactor
+
+  def swapped(self) -> "PreconditionerFactors":
+    """The factors seen from the adjoint operator.
+
+    Returns:
+      The same factors with `forward` and `adjoint` exchanged.
+    """
+    return PreconditionerFactors(forward=self.adjoint, adjoint=self.forward)
+
+
+def factorize_preconditioner(
   stencils: SparsifyingStencils, omega: float | Array, nu: Array
+) -> PreconditionerFactors | None:
+  """Factor ``M`` once, for every solve at this contrast.
+
+  Args:
+    stencils: The sparsifying stencils of this frequency.
+    omega: Angular frequency.
+    nu: Flat contrast.
+
+  Returns:
+    The factors for the ``"block_inverse"`` backend.  None for ``"superlu"``,
+    whose host cache already reuses a factorisation across calls.
+  """
+  if stencils.backend != "block_inverse":
+    return None
+  omega_c, nu_c = jax.lax.stop_gradient((omega, nu))
+  forward = factor_matrix(stencils, omega_c, nu_c)
+  _record_device_factorization()
+  if not jnp.iscomplexobj(nu_c):
+    return PreconditionerFactors(forward=forward, adjoint=forward)
+  adjoint = factor_matrix(stencils, omega_c, jnp.conj(nu_c))
+  _record_device_factorization()
+  return PreconditionerFactors(forward=forward, adjoint=adjoint)
+
+
+def _inverse_mt(
+  stencils: SparsifyingStencils,
+  omega: float | Array,
+  nu: Array,
+  factor: NDFactor | None = None,
 ) -> Callable[[Array], Array]:
   """``r -> M^{-T} r`` with ``M = -Acal + omega^2 C D_nu``.
 
@@ -748,6 +822,8 @@ def _inverse_mt(
     stencils: The sparsifying stencils of this frequency.
     omega: Angular frequency.
     nu: Flat contrast.
+    factor: A ``"block_inverse"`` factorisation of ``M`` at `nu` to reuse; when
+      None, one is computed here.
 
   Returns:
     A callable applying ``M^{-T}``, differentiable and transposable through
@@ -772,9 +848,11 @@ def _inverse_mt(
     ) + omega**2 * nu * apply_stencil_transpose(domain, stencils.local, v)
 
   if stencils.backend == "block_inverse":
-    factor = nd_solver.factorize(
-      stencils.structure, matrix_coefficients(stencils, omega_c, nu_c)
-    )
+    if factor is None:
+      factor = nd_solver.factorize(
+        stencils.structure, matrix_coefficients(stencils, omega_c, nu_c)
+      )
+      _record_device_factorization()
 
     def device(mode: str) -> Callable:
       """A `custom_linear_solve` solver applying ``op(M)^{-1}`` on device.
@@ -835,6 +913,7 @@ def preconditioner(
   omega: float | Array,
   nu: Array,
   adjoint: bool = False,
+  factors: PreconditionerFactors | None = None,
 ) -> Callable[[Array], Array]:
   """The preconditioner as a callable, ready for `jax_ls.solvers.solve`.
 
@@ -850,15 +929,25 @@ def preconditioner(
     omega: Angular frequency.
     nu: Flat contrast.
     adjoint: Precondition the adjoint-like operator instead.
+    factors: Factorisations from `factorize_preconditioner` at this same
+      contrast, to reuse instead of factoring again.  Ignored by the
+      ``"superlu"`` backend.
 
   Returns:
     A callable applying the preconditioner to a flat vector.
   """
   if adjoint:
-    forward = preconditioner(stencils, omega, jnp.conj(nu))
+    forward = preconditioner(
+      stencils,
+      omega,
+      jnp.conj(nu),
+      factors=None if factors is None else factors.swapped(),
+    )
     return lambda r: jnp.conj(forward(jnp.conj(r)))
 
-  inverse = _inverse_mt(stencils, omega, nu)
+  inverse = _inverse_mt(
+    stencils, omega, nu, None if factors is None else factors.forward
+  )
 
   def apply(r: Array) -> Array:
     """Apply ``P = Acal^T M^{-T}``.

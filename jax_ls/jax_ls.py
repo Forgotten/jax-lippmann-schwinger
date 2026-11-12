@@ -35,7 +35,12 @@ from flax import struct
 
 from .domain import Domain
 from .solvers import GmresConfig, SolveInfo, solve, solve_with_info
-from .sparsify import SparsifyingStencils, preconditioner as _sparsifying
+from .sparsify import (
+  PreconditionerFactors,
+  SparsifyingStencils,
+  factorize_preconditioner,
+  preconditioner as _sparsifying,
+)
 from .kernels import (
   DEFAULT_PAD,
   DEFAULT_TRUNCATION_FACTOR,
@@ -61,6 +66,7 @@ __all__ = [
   "GmresConfig",
   "SolveInfo",
   "init_params",
+  "preconditioner_factors",
   "preconditioner_for",
   "with_sparsifying_preconditioner",
   "ls_solver",
@@ -237,8 +243,32 @@ def with_sparsifying_preconditioner(
   )
 
 
+def preconditioner_factors(
+  params: LippSchwinParams, nu_vect: Array
+) -> PreconditionerFactors | None:
+  """Factor the preconditioner once, for every solve at this contrast.
+
+  Pass the result as ``factors=`` to the solvers below, or keep it in a
+  `jax_ls.near_field.Linearization`, to stop each solve from refactoring.
+
+  Args:
+    params: Parameters, possibly carrying a `sparsifier`.
+    nu_vect: Contrast.
+
+  Returns:
+    The factors, or None when there is nothing to cache: no preconditioner, or
+    the ``"superlu"`` backend, which caches on the host by itself.
+  """
+  if params.sparsifier is None:
+    return None
+  return factorize_preconditioner(params.sparsifier, params.omega, nu_vect)
+
+
 def preconditioner_for(
-  params: LippSchwinParams, nu_vect: Array, adjoint: bool = False
+  params: LippSchwinParams,
+  nu_vect: Array,
+  adjoint: bool = False,
+  factors: PreconditionerFactors | None = None,
 ):
   """The right preconditioner of the (adjoint) operator, or None.
 
@@ -247,6 +277,7 @@ def preconditioner_for(
     nu_vect: Contrast the operator is built from.
     adjoint: Precondition `apply_lipp_schwin_adj` rather than
       `apply_lipp_schwin`.
+    factors: Cached factorisations at `nu_vect`, from `preconditioner_factors`.
 
   Returns:
     A callable approximating the inverse, or None when `params` has no
@@ -254,7 +285,9 @@ def preconditioner_for(
   """
   if params.sparsifier is None:
     return None
-  return _sparsifying(params.sparsifier, params.omega, nu_vect, adjoint)
+  return _sparsifying(
+    params.sparsifier, params.omega, nu_vect, adjoint, factors=factors
+  )
 
 
 def _apply_kernel(
@@ -368,6 +401,7 @@ def ls_solver(
   f: Array,
   config: GmresConfig = GmresConfig(),
   x0: Array | None = None,
+  factors: PreconditionerFactors | None = None,
 ) -> Array:
   """Solve the Lippmann-Schwinger equation for the density.
 
@@ -377,6 +411,8 @@ def ls_solver(
     f: Right-hand side vector.
     config: GMRES settings.  Defaults are unchanged from before.
     x0: Optional initial guess.
+    factors: Cached preconditioner factorisations at `nu_vect`, from
+      `preconditioner_factors`; None factors afresh when needed.
 
   Returns:
     The solution density sigma.
@@ -386,7 +422,7 @@ def ls_solver(
     f,
     config,
     x0,
-    preconditioner_for(params, nu_vect),
+    preconditioner_for(params, nu_vect, factors=factors),
   )
 
 
@@ -397,6 +433,7 @@ def ls_solver_adj(
   f: Array,
   config: GmresConfig = GmresConfig(),
   x0: Array | None = None,
+  factors: PreconditionerFactors | None = None,
 ) -> Array:
   """Solve the adjoint Lippmann-Schwinger equation for the density.
 
@@ -406,6 +443,8 @@ def ls_solver_adj(
     f: Right-hand side vector.
     config: GMRES settings.
     x0: Optional initial guess.
+    factors: Cached preconditioner factorisations at `nu_vect`, from
+      `preconditioner_factors`; None factors afresh when needed.
 
   Returns:
     The adjoint solution density.
@@ -415,7 +454,7 @@ def ls_solver_adj(
     f,
     config,
     x0,
-    preconditioner_for(params, nu_vect, adjoint=True),
+    preconditioner_for(params, nu_vect, adjoint=True, factors=factors),
   )
 
 
@@ -426,12 +465,22 @@ def ls_solver_with_info(
   f: Array,
   config: GmresConfig = GmresConfig(),
   x0: Array | None = None,
+  factors: PreconditionerFactors | None = None,
 ) -> tuple[Array, SolveInfo]:
   """Solve, and report whether GMRES converged.
 
   GMRES's own ``info`` is always 0 and carries no information, so the residual
   is measured here at the cost of one extra operator application.  Worth it
   when the contrast is large: see `jax_ls.solvers`.
+
+  Args:
+    params: Configuration parameters for the solver.
+    nu_vect: Contrast/perturbation vector.
+    f: Right-hand side vector.
+    config: GMRES settings.
+    x0: Optional initial guess.
+    factors: Cached preconditioner factorisations at `nu_vect`, from
+      `preconditioner_factors`; None factors afresh when needed.
 
   Returns:
     A tuple of (density, `SolveInfo`).
@@ -441,7 +490,7 @@ def ls_solver_with_info(
     f,
     config,
     x0,
-    preconditioner_for(params, nu_vect),
+    preconditioner_for(params, nu_vect, factors=factors),
   )
 
 
@@ -452,8 +501,18 @@ def ls_solver_adj_with_info(
   f: Array,
   config: GmresConfig = GmresConfig(),
   x0: Array | None = None,
+  factors: PreconditionerFactors | None = None,
 ) -> tuple[Array, SolveInfo]:
   """Solve the adjoint equation, and report whether GMRES converged.
+
+  Args:
+    params: Configuration parameters for the solver.
+    nu_vect: Contrast/perturbation vector.
+    f: Right-hand side vector.
+    config: GMRES settings.
+    x0: Optional initial guess.
+    factors: Cached preconditioner factorisations at `nu_vect`, from
+      `preconditioner_factors`; None factors afresh when needed.
 
   Returns:
     A tuple of (adjoint density, `SolveInfo`).
@@ -463,7 +522,7 @@ def ls_solver_adj_with_info(
     f,
     config,
     x0,
-    preconditioner_for(params, nu_vect, adjoint=True),
+    preconditioner_for(params, nu_vect, adjoint=True, factors=factors),
   )
 
 

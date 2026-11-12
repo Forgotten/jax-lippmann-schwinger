@@ -10,7 +10,7 @@ from .solvers import (
   block_solve_with_info,
 )
 from .nd_solver import NDFactor, NDStructure
-from .sparsify import SparsifyingStencils
+from .sparsify import PreconditionerFactors, SparsifyingStencils
 from .filters import band_dimension, band_index, band_limit, band_mask
 from .losses import (
   FrequencyDataset,
@@ -47,6 +47,7 @@ from .jax_ls import (
   apply_lipp_schwin_adj,
   fourier_green_function,
   init_params,
+  preconditioner_factors,
   preconditioner_for,
   with_sparsifying_preconditioner,
   ls_solver,
@@ -100,8 +101,10 @@ __all__ = [
   "NearFieldParams",
   "init_params",
   "init_params_near_field",
+  "preconditioner_factors",
   "preconditioner_for",
   "with_sparsifying_preconditioner",
+  "PreconditionerFactors",
   "SparsifyingStencils",
   "NDFactor",
   "NDStructure",

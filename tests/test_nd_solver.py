@@ -379,3 +379,139 @@ class TestBackend:
     lhs = jnp.vdot(w, lin.jvp(t))
     rhs = jnp.vdot(lin.vjp(w), t)
     assert abs(lhs - rhs) <= 1e-4 * abs(lhs)
+
+
+# ---------------------------------------------------------------------------
+# Caching the factorisation across solves at one contrast.
+# ---------------------------------------------------------------------------
+@pytest.fixture(scope="module")
+def cached_setup():
+  near = jax_ls.init_params_near_field(1.0, 1.0, 48, 48, 1.0, 8, 30.0)
+  near = near.replace(
+    ls_params=jax_ls.with_sparsifying_preconditioner(
+      near.ls_params, backend="block_inverse"
+    )
+  )
+  domain = near.ls_params.domain
+  nu = domain.sample(lambda x, y: 2.0 * jnp.exp(-10 * (x**2 + y**2)))
+  t = domain.sample(lambda x, y: jnp.exp(-30 * ((x - 0.1) ** 2 + y**2)))
+  w = jax.random.normal(jax.random.PRNGKey(9), (64,)) + 0j
+  return near, nu, t, w
+
+
+def _device_factorisations(fn) -> int:
+  """Run `fn` once compiled and count the device factorisations it does."""
+  jax.block_until_ready(fn())
+  sparsify.clear_factorizations()
+  jax.block_until_ready(fn())
+  return sparsify.factorization_stats().get("device_factorizations", 0)
+
+
+class TestFactorCaching:
+  def test_real_contrast_shares_one_factorisation(self, cached_setup):
+    near, nu, _, _ = cached_setup
+    factors = jax_ls.preconditioner_factors(near.ls_params, nu)
+    assert isinstance(factors, jax_ls.PreconditionerFactors)
+    assert factors.adjoint is factors.forward
+
+  def test_complex_contrast_factors_its_conjugate(self, cached_setup):
+    near, nu, _, _ = cached_setup
+    nu_c = nu * (1.0 + 0.3j)
+    factors = jax_ls.preconditioner_factors(near.ls_params, nu_c)
+    assert factors.adjoint is not factors.forward
+    f = jnp.ones(near.ls_params.n_dof, dtype=complex)
+    for solver in (jax_ls.ls_solver, jax_ls.ls_solver_adj):
+      cached = solver(near.ls_params, nu_c, f, TIGHT, factors=factors)
+      fresh = solver(near.ls_params, nu_c, f, TIGHT)
+      assert _rel(cached, fresh) < 1e-12
+
+  def test_nothing_to_cache_without_block_inverse(self):
+    params = jax_ls.init_params(1.0, 1.0, 16, 16, 10.0)
+    assert jax_ls.preconditioner_factors(params, jnp.zeros(256)) is None
+    superlu = jax_ls.with_sparsifying_preconditioner(params, backend="superlu")
+    assert jax_ls.preconditioner_factors(superlu, jnp.zeros(256)) is None
+
+  def test_given_factors_are_used_instead_of_refactoring(self, cached_setup):
+    near, nu, _, _ = cached_setup
+    params = near.ls_params
+    factors = jax_ls.preconditioner_factors(params, nu)
+    f = jnp.ones(params.n_dof, dtype=complex)
+    assert _device_factorisations(lambda: jax_ls.ls_solver(params, nu, f)) == 1
+    assert (
+      _device_factorisations(
+        lambda: jax_ls.ls_solver(params, nu, f, factors=factors)
+      )
+      == 0
+    )
+
+  @pytest.mark.parametrize(
+    "name",
+    ["map", "jvp_rule", "born_adjoint", "loss_and_grad", "grad", "vjp_rule"],
+  )
+  def test_each_operation_factors_once(self, cached_setup, name):
+    near, nu, t, w = cached_setup
+    data = jax_ls.near_field_map(near, 1.1 * nu)
+    run = {
+      "map": lambda: jax_ls.near_field_map(near, nu),
+      "jvp_rule": lambda: jax_ls.born_linearization(near, nu, t),
+      "born_adjoint": lambda: jax_ls.born_adjoint(near, nu, w),
+      "loss_and_grad": lambda: jax_ls.near_field_l2_loss_and_grad(
+        near, data, nu
+      ),
+      "grad": lambda: jax.grad(partial(jax_ls.near_field_l2_loss, near, data))(
+        nu
+      ),
+      "vjp_rule": lambda: jax.vjp(
+        partial(jax_ls.near_field_map_reverse_mode, near), nu
+      )[1](w),
+    }[name]
+    assert _device_factorisations(run) == 1
+
+  @pytest.mark.parametrize("cache", [True, False])
+  def test_linearization_factors_once_when_cached(self, cached_setup, cache):
+    near, nu, t, _ = cached_setup
+    n_pairs = 3
+
+    def run():
+      lin = jax_ls.linearize(near, nu, cache_factors=cache)
+      return [lin.vjp(lin.jvp(t)) for _ in range(n_pairs)]
+
+    expected = 1 if cache else 1 + 2 * n_pairs
+    assert _device_factorisations(run) == expected
+
+  def test_caching_changes_no_result(self, cached_setup):
+    near, nu, t, w = cached_setup
+    cached = jax_ls.linearize(near, nu)
+    fresh = jax_ls.linearize(near, nu, cache_factors=False)
+    assert cached.factors is not None and fresh.factors is None
+    assert jnp.array_equal(cached.jvp(t), fresh.jvp(t))
+    assert jnp.array_equal(cached.vjp(w), fresh.vjp(w))
+
+  def test_gauss_newton_step_factors_once(self, cached_setup):
+    """A whole CG-on-normal-equations step reuses the linearisation's factor."""
+    near, nu, _, _ = cached_setup
+    data = jax_ls.near_field_map(near, 1.1 * nu).reshape(-1)
+    inner = jax_ls.NormalEquationsConfig(n_iter=4)
+    counts = {}
+    for cache in (True, False):
+
+      def run(cache=cache):
+        lin = jax_ls.linearize(near, nu, cache_factors=cache)
+        return jax_ls.gauss_newton_step(lin, data - lin.data, 30.0, inner)
+
+      counts[cache] = _device_factorisations(run)
+    assert counts[True] == 1
+    assert counts[False] > 1 + 2 * 4, counts
+
+  def test_superlu_gradient_agrees(self, cached_setup):
+    """The cached gradient matches the SuperLU backend's."""
+    near, nu, _, _ = cached_setup
+    superlu = near.replace(
+      ls_params=jax_ls.with_sparsifying_preconditioner(
+        near.ls_params.replace(sparsifier=None), backend="superlu"
+      )
+    )
+    data = jax_ls.near_field_map(near, 1.1 * nu)
+    _, g_block = jax_ls.near_field_l2_loss_and_grad(near, data, nu)
+    _, g_superlu = jax_ls.near_field_l2_loss_and_grad(superlu, data, nu)
+    assert _rel(g_block, g_superlu) < 1e-3

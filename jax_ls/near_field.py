@@ -56,7 +56,9 @@ from .sampling import IncidentField, PointSources, SamplingManifold
 from .jax_ls import LippSchwinParams, init_params
 from .jax_ls import apply_conj_green_function, apply_green_function
 from .jax_ls import apply_lipp_schwin, apply_lipp_schwin_adj
-from .jax_ls import ls_solver, ls_solver_adj, preconditioner_for
+from .jax_ls import ls_solver, ls_solver_adj
+from .jax_ls import preconditioner_factors, preconditioner_for
+from .sparsify import PreconditionerFactors
 from .solvers import BlockGmresConfig, block_solve
 
 Array = jax.Array
@@ -238,19 +240,47 @@ def _incident_rhs(params: NearFieldParams, nu_vect: Array) -> Array:
 
 
 def _block_preconditioner(
-  params: NearFieldParams, nu_vect: Array, adjoint: bool
+  params: NearFieldParams,
+  nu_vect: Array,
+  adjoint: bool,
+  factors: PreconditionerFactors | None = None,
 ):
-  """The column-wise preconditioner of a block solve, or None."""
-  single = preconditioner_for(params.ls_params, nu_vect, adjoint)
+  """The column-wise preconditioner of a block solve.
+
+  Args:
+    params: Configuration for the near-field map.
+    nu_vect: Contrast vector.
+    adjoint: Precondition the adjoint-like operator.
+    factors: Cached factorisations at `nu_vect`, or None.
+
+  Returns:
+    A callable acting on ``(n_dof, p)`` blocks, or None without a
+    preconditioner.
+  """
+  single = preconditioner_for(params.ls_params, nu_vect, adjoint, factors)
   if single is None:
     return None
   return vmap(single, in_axes=1, out_axes=1)
 
 
 def _solve_all_sources(
-  params: NearFieldParams, nu_vect: Array, rhs: Array
+  params: NearFieldParams,
+  nu_vect: Array,
+  rhs: Array,
+  factors: PreconditionerFactors | None = None,
 ) -> Array:
-  """Solve the integral equation for every column of `rhs`."""
+  """Solve the integral equation for every column of `rhs`.
+
+  Args:
+    params: Configuration for the near-field map.
+    nu_vect: Contrast vector.
+    rhs: Right-hand sides, one column per source.
+    factors: Cached preconditioner factorisations at `nu_vect`; None factors
+      once for this call, shared by every column.
+
+  Returns:
+    The densities, one column per source.
+  """
   if params.block is not None:
     operator = vmap(
       partial(apply_lipp_schwin, params.ls_params, nu_vect),
@@ -261,19 +291,37 @@ def _solve_all_sources(
       operator,
       rhs,
       params.block,
-      preconditioner=_block_preconditioner(params, nu_vect, adjoint=False),
+      preconditioner=_block_preconditioner(
+        params, nu_vect, adjoint=False, factors=factors
+      ),
     )
 
   solve = vmap(
-    partial(ls_solver, params.ls_params, nu_vect), in_axes=1, out_axes=1
+    partial(ls_solver, params.ls_params, nu_vect, factors=factors),
+    in_axes=1,
+    out_axes=1,
   )
   return solve(rhs)
 
 
 def _solve_all_sources_adj(
-  params: NearFieldParams, nu_vect: Array, rhs: Array
+  params: NearFieldParams,
+  nu_vect: Array,
+  rhs: Array,
+  factors: PreconditionerFactors | None = None,
 ) -> Array:
-  """Solve the adjoint integral equation for every column of `rhs`."""
+  """Solve the adjoint integral equation for every column of `rhs`.
+
+  Args:
+    params: Configuration for the near-field map.
+    nu_vect: Contrast vector.
+    rhs: Right-hand sides, one column per source.
+    factors: Cached preconditioner factorisations at `nu_vect`; None factors
+      once for this call, shared by every column.
+
+  Returns:
+    The densities, one column per source.
+  """
   if params.block is not None:
     operator = vmap(
       partial(apply_lipp_schwin_adj, params.ls_params, nu_vect),
@@ -284,11 +332,15 @@ def _solve_all_sources_adj(
       operator,
       rhs,
       params.block,
-      preconditioner=_block_preconditioner(params, nu_vect, adjoint=True),
+      preconditioner=_block_preconditioner(
+        params, nu_vect, adjoint=True, factors=factors
+      ),
     )
 
   solve = vmap(
-    partial(ls_solver_adj, params.ls_params, nu_vect), in_axes=1, out_axes=1
+    partial(ls_solver_adj, params.ls_params, nu_vect, factors=factors),
+    in_axes=1,
+    out_axes=1,
   )
   return solve(rhs)
 
@@ -324,7 +376,11 @@ def _sample_near_field(params: NearFieldParams, sigma: Array) -> Array:
 
 
 def _adjoint_apply(
-  params: NearFieldParams, nu_vect: Array, u_total: Array, cotangent: Array
+  params: NearFieldParams,
+  nu_vect: Array,
+  u_total: Array,
+  cotangent: Array,
+  factors: PreconditionerFactors | None = None,
 ) -> Array:
   """Apply the Hermitian adjoint J^H to a cotangent matrix.
 
@@ -351,6 +407,7 @@ def _adjoint_apply(
     nu_vect: Contrast vector.
     u_total: Total field of every source, of shape (n_dof, n_sources).
     cotangent: Cotangent, of shape (n_sources, n_receivers).
+    factors: Cached preconditioner factorisations at `nu_vect`, or None.
 
   Returns:
     The cotangent with respect to `nu_vect`, of shape (n_dof,).
@@ -367,7 +424,7 @@ def _adjoint_apply(
   u_adj_incident = (omega**2) * (jnp.conj(params.sampling_kernel) @ cotangent.T)
 
   rhs_adjoint = -(omega**2) * u_adj_incident * nu_vect.reshape((-1, 1))
-  sigma_adj = _solve_all_sources_adj(params, nu_vect, rhs_adjoint)
+  sigma_adj = _solve_all_sources_adj(params, nu_vect, rhs_adjoint, factors)
 
   u_adj = _apply_conj_green_all(params, sigma_adj) + u_adj_incident
 
@@ -438,13 +495,17 @@ def near_field_map_forward_mode_jvp(
   (nu_vect,) = primals
   (delta_nu_vect,) = tangents
 
-  sigma = _solve_all_sources(params, nu_vect, _incident_rhs(params, nu_vect))
+  # The primal and tangent solves share one preconditioner factorisation.
+  factors = preconditioner_factors(params.ls_params, nu_vect)
+  sigma = _solve_all_sources(
+    params, nu_vect, _incident_rhs(params, nu_vect), factors
+  )
   u_total = _total_field(params, sigma)
 
   rhs_tangent = (
     -(params.ls_params.omega**2) * delta_nu_vect.reshape((-1, 1)) * u_total
   )
-  delta_sigma = _solve_all_sources(params, nu_vect, rhs_tangent)
+  delta_sigma = _solve_all_sources(params, nu_vect, rhs_tangent, factors)
 
   return (
     _sample_near_field(params, sigma).reshape((-1,)),
@@ -475,18 +536,33 @@ def near_field_map_reverse_mode(
 
 def near_field_map_reverse_mode_fwd(
   params: NearFieldParams, nu_vect: Array
-) -> tuple[Array, tuple[Array, Array]]:
-  """Forward pass of the reverse-mode rule."""
-  sigma = _solve_all_sources(params, nu_vect, _incident_rhs(params, nu_vect))
+) -> tuple[Array, tuple]:
+  """Forward pass of the reverse-mode rule.
+
+  The preconditioner factorisation is kept as a residual, so the backward
+  pass's adjoint solve does not factor again.
+
+  Args:
+    params: Configuration for the near-field map.
+    nu_vect: Contrast vector.
+
+  Returns:
+    The flattened near field, and the residuals ``(u_total, nu_vect,
+    factors)``.
+  """
+  factors = preconditioner_factors(params.ls_params, nu_vect)
+  sigma = _solve_all_sources(
+    params, nu_vect, _incident_rhs(params, nu_vect), factors
+  )
   return (
     _sample_near_field(params, sigma).reshape((-1,)),
-    (_total_field(params, sigma), nu_vect),
+    (_total_field(params, sigma), nu_vect, factors),
   )
 
 
 def near_field_map_reverse_mode_bwd(
   params: NearFieldParams,
-  residuals: tuple[Array, Array],
+  residuals: tuple,
   cotangent: Array,
 ) -> tuple[Array]:
   """Backward pass of the reverse-mode rule.
@@ -494,9 +570,13 @@ def near_field_map_reverse_mode_bwd(
   ``J^T w = conj(J^H conj(w))``, so the Hermitian adjoint is reused with the
   cotangent conjugated on the way in and the result conjugated on the way out.
   """
-  u_total, nu_vect = residuals
+  u_total, nu_vect, factors = residuals
   adjoint = _adjoint_apply(
-    params, nu_vect, u_total, jnp.conj(cotangent).reshape(params.data_shape)
+    params,
+    nu_vect,
+    u_total,
+    jnp.conj(cotangent).reshape(params.data_shape),
+    factors,
   )
   return (jnp.conj(adjoint),)
 
@@ -549,12 +629,16 @@ def born_adjoint(
   Returns:
     J^H w, of shape (n_dof,).
   """
-  sigma = _solve_all_sources(params, nu_vect, _incident_rhs(params, nu_vect))
+  factors = preconditioner_factors(params.ls_params, nu_vect)
+  sigma = _solve_all_sources(
+    params, nu_vect, _incident_rhs(params, nu_vect), factors
+  )
   return _adjoint_apply(
     params,
     nu_vect,
     _total_field(params, sigma),
     cotangent.reshape(params.data_shape),
+    factors,
   )
 
 
@@ -572,13 +656,20 @@ class Linearization:
   application.  Building a `Linearization` once and calling `jvp` / `vjp` off it
   does the forward solve exactly once.
 
-  Attributes:
+  It also caches the preconditioner.  With the ``"block_inverse"`` backend
+  every batched solve would otherwise factor the sparsifying matrix afresh --
+  once per `jvp` and once per `vjp` -- although the contrast never moves; with
+  `factors` set, the whole Gauss-Newton step factors once.
+
+  Args:
     params: Configuration for the near-field map.
     nu_vect: The contrast the map is linearised about.
     sigma: Forward densities, one column per source.
     u_total: Total field of every source, of shape (n_dof, n_sources).
     data: The forward map at `nu_vect`, flattened -- free, since the forward
       solve had to happen anyway, and it is what the residual is measured from.
+    factors: Preconditioner factorisations at `nu_vect`, reused by every `jvp`
+      and `vjp`; None when there is nothing to cache or caching was declined.
   """
 
   params: NearFieldParams
@@ -586,6 +677,7 @@ class Linearization:
   sigma: Array
   u_total: Array
   data: Array
+  factors: PreconditionerFactors | None = None
 
   def jvp(self, delta_nu_vect: Array) -> Array:
     """Apply ``J``: the Born approximation about `nu_vect`.
@@ -603,7 +695,9 @@ class Linearization:
       * delta_nu_vect.reshape((-1, 1))
       * self.u_total
     )
-    delta_sigma = _solve_all_sources(self.params, self.nu_vect, rhs)
+    delta_sigma = _solve_all_sources(
+      self.params, self.nu_vect, rhs, self.factors
+    )
     return _sample_near_field(self.params, delta_sigma).reshape((-1,))
 
   def vjp(self, cotangent: Array) -> Array:
@@ -626,30 +720,39 @@ class Linearization:
       self.nu_vect,
       self.u_total,
       cotangent.reshape(self.params.data_shape),
+      self.factors,
     )
 
 
-@jit
-def linearize(params: NearFieldParams, nu_vect: Array) -> Linearization:
+@partial(jit, static_argnames=("cache_factors",))
+def linearize(
+  params: NearFieldParams, nu_vect: Array, cache_factors: bool = True
+) -> Linearization:
   """Linearise the near-field map about a contrast.
 
   Does the forward solve once; `Linearization.jvp` and `Linearization.vjp` then
-  reuse it.
+  reuse it, and the preconditioner factorisation with it.
 
   Args:
     params: Configuration for the near-field map.
     nu_vect: Contrast vector to linearise about.
+    cache_factors: Keep the preconditioner factorisation for `jvp` and `vjp`.
+      Only ``False`` to measure what caching saves.
 
   Returns:
     A `Linearization` about `nu_vect`.
   """
-  sigma = _solve_all_sources(params, nu_vect, _incident_rhs(params, nu_vect))
+  factors = preconditioner_factors(params.ls_params, nu_vect)
+  sigma = _solve_all_sources(
+    params, nu_vect, _incident_rhs(params, nu_vect), factors
+  )
   return Linearization(
     params=params,
     nu_vect=nu_vect,
     sigma=sigma,
     u_total=_total_field(params, sigma),
     data=_sample_near_field(params, sigma).reshape((-1,)),
+    factors=factors if cache_factors else None,
   )
 
 
@@ -677,28 +780,53 @@ def near_field_l2_loss(
 
 def near_field_l2_loss_fwd(
   params: NearFieldParams, u_data: Array, nu_vect: Array
-) -> tuple[Array, tuple[Array, Array, Array]]:
-  """Forward pass of the L2 loss VJP."""
-  sigma = _solve_all_sources(params, nu_vect, _incident_rhs(params, nu_vect))
+) -> tuple[Array, tuple]:
+  """Forward pass of the L2 loss VJP.
+
+  The preconditioner factorisation is kept as a residual, so the gradient's
+  adjoint solve does not factor again.
+
+  Args:
+    params: Configuration for the near-field map.
+    u_data: Reference near-field data, of shape (n_sources, n_receivers).
+    nu_vect: Contrast vector.
+
+  Returns:
+    The loss, and the residuals ``(u_total, residual, nu_vect, factors)``.
+  """
+  factors = preconditioner_factors(params.ls_params, nu_vect)
+  sigma = _solve_all_sources(
+    params, nu_vect, _incident_rhs(params, nu_vect), factors
+  )
   residual = _sample_near_field(params, sigma) - u_data
   loss = 0.5 * jnp.sum(jnp.abs(residual) ** 2)
-  return loss, (_total_field(params, sigma), residual, nu_vect)
+  return loss, (_total_field(params, sigma), residual, nu_vect, factors)
 
 
 def near_field_l2_loss_bwd(
   params: NearFieldParams,
   u_data: Array,
-  residuals: tuple[Array, Array, Array],
+  residuals: tuple,
   cotangent: float,
 ) -> tuple[Array]:
   """Backward pass of the L2 loss VJP (the adjoint-state gradient).
 
   The gradient of a real-valued misfit is the real part of ``J^H`` applied to
   the residual, so the same adjoint solve serves both.
+
+  Args:
+    params: Configuration for the near-field map.
+    u_data: Reference near-field data.
+    residuals: What `near_field_l2_loss_fwd` kept.
+    cotangent: Cotangent of the scalar loss.
+
+  Returns:
+    The gradient with respect to the contrast, as a one-tuple.
   """
-  u_total, residual, nu_vect = residuals
+  u_total, residual, nu_vect, factors = residuals
   return (
-    cotangent * jnp.real(_adjoint_apply(params, nu_vect, u_total, residual)),
+    cotangent
+    * jnp.real(_adjoint_apply(params, nu_vect, u_total, residual, factors)),
   )
 
 
