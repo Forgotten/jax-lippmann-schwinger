@@ -35,6 +35,7 @@ from flax import struct
 
 from .domain import Domain
 from .solvers import GmresConfig, SolveInfo, solve, solve_with_info
+from .sparsify import SparsifyingStencils, preconditioner as _sparsifying
 from .kernels import (
   DEFAULT_PAD,
   DEFAULT_TRUNCATION_FACTOR,
@@ -60,6 +61,8 @@ __all__ = [
   "GmresConfig",
   "SolveInfo",
   "init_params",
+  "preconditioner_for",
+  "with_sparsifying_preconditioner",
   "ls_solver",
   "ls_solver_adj",
   "ls_solver_with_info",
@@ -84,10 +87,15 @@ class LippSchwinParams:
   Attributes:
     kernel: The truncated Green's kernel, which carries the domain.
     omega: The angular frequency of the wavefield.
+    sparsifier: Optional stencils of Ying's sparsifying preconditioner.  When
+      set, every solve built on these parameters -- `ls_solver`, the near-field
+      map, its derivatives, the inversions -- is right-preconditioned by it.
+      See `jax_ls.sparsify` and `with_sparsifying_preconditioner`.
   """
 
   kernel: GreenKernel
   omega: float
+  sparsifier: SparsifyingStencils | None = None
 
   # -- geometry, read through to the domain --------------------------------
   @property
@@ -145,6 +153,8 @@ def init_params(
   omega: float,
   pad: int = DEFAULT_PAD,
   truncation_radius: float | None = None,
+  sparsify: bool = False,
+  refactor_rtol: float = 0.0,
 ) -> LippSchwinParams:
   """Initialize the parameters for the Lippmann-Schwinger solver.
 
@@ -166,6 +176,9 @@ def init_params(
     pad: Zero-padding factor used for the aperiodic FFT convolution.
     truncation_radius: Radius L at which the Green's function is truncated.
       Defaults to DEFAULT_TRUNCATION_FACTOR times the diameter of the domain.
+    sparsify: Attach Ying's sparsifying preconditioner to every solve.
+    refactor_rtol: With `sparsify`, reuse a cached factorisation for contrasts
+      within this relative distance; see `jax_ls.sparsify`.
 
   Returns:
     A LippSchwinParams object containing the initialized parameters.
@@ -178,7 +191,52 @@ def init_params(
   kernel = GreenKernel.create(
     domain, omega, pad=pad, truncation_radius=truncation_radius
   )
-  return LippSchwinParams(kernel=kernel, omega=omega)
+  params = LippSchwinParams(kernel=kernel, omega=omega)
+  if sparsify:
+    params = with_sparsifying_preconditioner(params, refactor_rtol)
+  return params
+
+
+def with_sparsifying_preconditioner(
+  params: LippSchwinParams, refactor_rtol: float = 0.0
+) -> LippSchwinParams:
+  """The same parameters, with Ying's sparsifying preconditioner attached.
+
+  Builds the stencils, which costs about 81 applications of the kernel and is
+  done once per frequency.  Not jittable.
+
+  Args:
+    params: Parameters to precondition.
+    refactor_rtol: Reuse a cached factorisation for contrasts within this
+      relative distance of the one it was built for; 0 refactors every time the
+      contrast changes.
+
+  Returns:
+    A copy of `params` whose solves are preconditioned.
+  """
+  return params.replace(
+    sparsifier=SparsifyingStencils.create(params.kernel, refactor_rtol)
+  )
+
+
+def preconditioner_for(
+  params: LippSchwinParams, nu_vect: Array, adjoint: bool = False
+):
+  """The right preconditioner of the (adjoint) operator, or None.
+
+  Args:
+    params: Parameters, possibly carrying a `sparsifier`.
+    nu_vect: Contrast the operator is built from.
+    adjoint: Precondition `apply_lipp_schwin_adj` rather than
+      `apply_lipp_schwin`.
+
+  Returns:
+    A callable approximating the inverse, or None when `params` has no
+    preconditioner attached.
+  """
+  if params.sparsifier is None:
+    return None
+  return _sparsifying(params.sparsifier, params.omega, nu_vect, adjoint)
 
 
 def _apply_kernel(
@@ -305,7 +363,13 @@ def ls_solver(
   Returns:
     The solution density sigma.
   """
-  return solve(_lipp_schwin_operator(params, nu_vect), f, config, x0)
+  return solve(
+    _lipp_schwin_operator(params, nu_vect),
+    f,
+    config,
+    x0,
+    preconditioner_for(params, nu_vect),
+  )
 
 
 @jit
@@ -328,7 +392,13 @@ def ls_solver_adj(
   Returns:
     The adjoint solution density.
   """
-  return solve(_lipp_schwin_operator_adj(params, nu_vect), f, config, x0)
+  return solve(
+    _lipp_schwin_operator_adj(params, nu_vect),
+    f,
+    config,
+    x0,
+    preconditioner_for(params, nu_vect, adjoint=True),
+  )
 
 
 @jit
@@ -348,7 +418,13 @@ def ls_solver_with_info(
   Returns:
     A tuple of (density, `SolveInfo`).
   """
-  return solve_with_info(_lipp_schwin_operator(params, nu_vect), f, config, x0)
+  return solve_with_info(
+    _lipp_schwin_operator(params, nu_vect),
+    f,
+    config,
+    x0,
+    preconditioner_for(params, nu_vect),
+  )
 
 
 @jit
@@ -365,7 +441,11 @@ def ls_solver_adj_with_info(
     A tuple of (adjoint density, `SolveInfo`).
   """
   return solve_with_info(
-    _lipp_schwin_operator_adj(params, nu_vect), f, config, x0
+    _lipp_schwin_operator_adj(params, nu_vect),
+    f,
+    config,
+    x0,
+    preconditioner_for(params, nu_vect, adjoint=True),
   )
 
 

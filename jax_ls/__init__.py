@@ -9,6 +9,7 @@ from .solvers import (
   block_solve,
   block_solve_with_info,
 )
+from .sparsify import SparsifyingStencils
 from .filters import band_dimension, band_index, band_limit, band_mask
 from .losses import (
   FrequencyDataset,
@@ -45,6 +46,8 @@ from .jax_ls import (
   apply_lipp_schwin_adj,
   fourier_green_function,
   init_params,
+  preconditioner_for,
+  with_sparsifying_preconditioner,
   ls_solver,
   ls_solver_adj,
   ls_solver_adj_with_info,
@@ -96,6 +99,9 @@ __all__ = [
   "NearFieldParams",
   "init_params",
   "init_params_near_field",
+  "preconditioner_for",
+  "with_sparsifying_preconditioner",
+  "SparsifyingStencils",
   "make_near_field_params",
   # Kernels and operators.
   "fourier_green_function",

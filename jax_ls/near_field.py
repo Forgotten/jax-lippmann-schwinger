@@ -56,7 +56,7 @@ from .sampling import IncidentField, PointSources, SamplingManifold
 from .jax_ls import LippSchwinParams, init_params
 from .jax_ls import apply_conj_green_function, apply_green_function
 from .jax_ls import apply_lipp_schwin, apply_lipp_schwin_adj
-from .jax_ls import ls_solver, ls_solver_adj
+from .jax_ls import ls_solver, ls_solver_adj, preconditioner_for
 from .solvers import BlockGmresConfig, block_solve
 
 Array = jax.Array
@@ -237,6 +237,16 @@ def _incident_rhs(params: NearFieldParams, nu_vect: Array) -> Array:
   )
 
 
+def _block_preconditioner(
+  params: NearFieldParams, nu_vect: Array, adjoint: bool
+):
+  """The column-wise preconditioner of a block solve, or None."""
+  single = preconditioner_for(params.ls_params, nu_vect, adjoint)
+  if single is None:
+    return None
+  return vmap(single, in_axes=1, out_axes=1)
+
+
 def _solve_all_sources(
   params: NearFieldParams, nu_vect: Array, rhs: Array
 ) -> Array:
@@ -247,7 +257,12 @@ def _solve_all_sources(
       in_axes=1,
       out_axes=1,
     )
-    return block_solve(operator, rhs, params.block)
+    return block_solve(
+      operator,
+      rhs,
+      params.block,
+      preconditioner=_block_preconditioner(params, nu_vect, adjoint=False),
+    )
 
   solve = vmap(
     partial(ls_solver, params.ls_params, nu_vect), in_axes=1, out_axes=1
@@ -265,7 +280,12 @@ def _solve_all_sources_adj(
       in_axes=1,
       out_axes=1,
     )
-    return block_solve(operator, rhs, params.block)
+    return block_solve(
+      operator,
+      rhs,
+      params.block,
+      preconditioner=_block_preconditioner(params, nu_vect, adjoint=True),
+    )
 
   solve = vmap(
     partial(ls_solver_adj, params.ls_params, nu_vect), in_axes=1, out_axes=1
