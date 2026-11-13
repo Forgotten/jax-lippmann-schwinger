@@ -480,12 +480,18 @@ class TestFactorCaching:
     assert _device_factorisations(run) == expected
 
   def test_caching_changes_no_result(self, cached_setup):
+    """Same factorisation, same answer -- up to rounding.
+
+    Not bit-for-bit: the cached and uncached paths are different XLA programs,
+    whose fusion and reduction order may differ, so results can differ in the
+    last bits depending on what else has been compiled in the process.
+    """
     near, nu, t, w = cached_setup
     cached = jax_ls.linearize(near, nu)
     fresh = jax_ls.linearize(near, nu, cache_factors=False)
     assert cached.factors is not None and fresh.factors is None
-    assert jnp.array_equal(cached.jvp(t), fresh.jvp(t))
-    assert jnp.array_equal(cached.vjp(w), fresh.vjp(w))
+    for a, b in ((cached.jvp(t), fresh.jvp(t)), (cached.vjp(w), fresh.vjp(w))):
+      assert _rel(a, b) < 1e-12, _rel(a, b)
 
   def test_gauss_newton_step_factors_once(self, cached_setup):
     """A whole CG-on-normal-equations step reuses the linearisation's factor."""
