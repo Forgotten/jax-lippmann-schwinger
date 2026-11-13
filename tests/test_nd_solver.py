@@ -97,6 +97,22 @@ class TestStructure:
       b = np.asarray(shallower.separator_idx).ravel()
       assert rank[a[a < m * n]].min() < rank[b[b < m * n]].max()
 
+  def test_dissection_tree_matches_the_structure(self):
+    """The public tree is the one the structure and the ordering come from."""
+    root = jax_ls.dissection_tree(31, 20, 8)
+    nodes = list(root.nodes())
+    assert nodes[-1] is root and root.depth == 0
+    order = np.concatenate([node.separator for node in nodes])
+    assert np.array_equal(order, nd.nested_dissection(31, 20, 8))
+    st = nd.NDStructure.create(31, 20, 8)
+    assert max(node.depth for node in nodes) == len(st.levels) - 1
+    for node in nodes:
+      for child in node.children:
+        assert child.depth == node.depth + 1
+        assert set(child.boundary.tolist()) <= set(
+          node.separator.tolist()
+        ) | set(node.boundary.tolist())
+
   def test_sparsify_uses_the_same_ordering(self):
     assert np.array_equal(
       sparsify.nested_dissection(31, 20), nd.nested_dissection(31, 20)

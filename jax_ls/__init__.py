@@ -9,7 +9,7 @@ from .solvers import (
   block_solve,
   block_solve_with_info,
 )
-from .nd_solver import NDFactor, NDStructure
+from .nd_solver import NDFactor, NDStructure, TreeNode, dissection_tree
 from .sparsify import PreconditionerFactors, SparsifyingStencils
 from .filters import band_dimension, band_index, band_limit, band_mask
 from .losses import (
@@ -108,6 +108,8 @@ __all__ = [
   "SparsifyingStencils",
   "NDFactor",
   "NDStructure",
+  "TreeNode",
+  "dissection_tree",
   "make_near_field_params",
   # Kernels and operators.
   "fourier_green_function",

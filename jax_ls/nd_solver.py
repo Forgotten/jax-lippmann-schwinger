@@ -96,8 +96,8 @@ MODES = ("N", "T", "H")
 # The dissection tree.
 # ---------------------------------------------------------------------------
 @dataclass
-class _Node:
-  """One node of the dissection tree, on the host.
+class TreeNode:
+  """One node of the dissection tree, on the host; see `dissection_tree`.
 
   Args:
     separator: Grid indices of the node's separator, or of its whole box for a
@@ -111,10 +111,18 @@ class _Node:
   separator: np.ndarray
   boundary: np.ndarray
   depth: int
-  children: list["_Node"] = field(default_factory=list)
+  children: list["TreeNode"] = field(default_factory=list)
+
+  def nodes(self) -> Iterator["TreeNode"]:
+    """Every node of this subtree, children before parents.
+
+    Returns:
+      An iterator in elimination order.
+    """
+    return _postorder(self)
 
 
-def _build_tree(m: int, n: int, leaf: int) -> _Node:
+def _build_tree(m: int, n: int, leaf: int) -> TreeNode:
   """Build the dissection tree of an ``m x n`` grid.
 
   Splits the longer side of each box by a one-line separator, recursively, until
@@ -147,7 +155,7 @@ def _build_tree(m: int, n: int, leaf: int) -> _Node:
     ring = ids[np.ix_(rows, cols)].ravel()
     return np.setdiff1d(ring, ids[r0:r1, c0:c1].ravel())
 
-  def split(r0: int, r1: int, c0: int, c1: int, depth: int) -> _Node:
+  def split(r0: int, r1: int, c0: int, c1: int, depth: int) -> TreeNode:
     """The subtree of the box ``[r0, r1) x [c0, c1)``.
 
     Args:
@@ -163,14 +171,14 @@ def _build_tree(m: int, n: int, leaf: int) -> _Node:
     n_rows, n_cols = r1 - r0, c1 - c0
     boundary = adjacent(r0, r1, c0, c1)
     if n_rows * n_cols <= leaf * leaf or (n_rows < 3 and n_cols < 3):
-      return _Node(ids[r0:r1, c0:c1].ravel(), boundary, depth)
+      return TreeNode(ids[r0:r1, c0:c1].ravel(), boundary, depth)
     if n_cols >= n_rows:
       mid = c0 + n_cols // 2
-      node = _Node(ids[r0:r1, mid].ravel(), boundary, depth)
+      node = TreeNode(ids[r0:r1, mid].ravel(), boundary, depth)
       halves = [(r0, r1, c0, mid), (r0, r1, mid + 1, c1)]
     else:
       mid = r0 + n_rows // 2
-      node = _Node(ids[mid, c0:c1].ravel(), boundary, depth)
+      node = TreeNode(ids[mid, c0:c1].ravel(), boundary, depth)
       halves = [(r0, mid, c0, c1), (mid + 1, r1, c0, c1)]
     children = [split(*half, depth + 1) for half in halves]
     node.children = [child for child in children if child.separator.size]
@@ -179,7 +187,7 @@ def _build_tree(m: int, n: int, leaf: int) -> _Node:
   return split(0, m, 0, n, 0)
 
 
-def _postorder(node: _Node) -> Iterator[_Node]:
+def _postorder(node: TreeNode) -> Iterator[TreeNode]:
   """Visit a tree children first: the elimination order.
 
   Args:
@@ -191,6 +199,22 @@ def _postorder(node: _Node) -> Iterator[_Node]:
   for child in node.children:
     yield from _postorder(child)
   yield node
+
+
+def dissection_tree(m: int, n: int, leaf: int = DEFAULT_LEAF) -> TreeNode:
+  """The nested-dissection tree of an ``m x n`` grid, for inspection.
+
+  The same tree `NDStructure.create` and `nested_dissection` are built from.
+
+  Args:
+    m: Number of rows of the grid.
+    n: Number of columns.
+    leaf: Boxes of at most ``leaf**2`` points are not split.
+
+  Returns:
+    The root node; `TreeNode.nodes` walks the tree in elimination order.
+  """
+  return _build_tree(m, n, leaf)
 
 
 def nested_dissection(m: int, n: int, leaf: int = DEFAULT_LEAF) -> np.ndarray:
@@ -315,7 +339,7 @@ class NDStructure:
     n_dof = m * n
     nodes = list(_postorder(_build_tree(m, n, leaf)))
 
-    by_depth: dict[int, list[_Node]] = {}
+    by_depth: dict[int, list[TreeNode]] = {}
     for node in nodes:
       by_depth.setdefault(node.depth, []).append(node)
     depths = sorted(by_depth, reverse=True)  # deepest first
