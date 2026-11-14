@@ -47,6 +47,7 @@ from functools import partial
 from typing import Callable, NamedTuple
 
 import numpy as np
+import scipy.optimize
 
 import jax
 import jax.numpy as jnp
@@ -271,12 +272,14 @@ def gauss_newton_step(
 class GaussNewton:
   """Band-limited Gauss-Newton.
 
-  Attributes:
+  Args:
     n_steps: Outer iterations.
     inner: Linear least-squares solver for each step.
     band_factor: Multiple of `omega` retained in the search space, or None to
       disable band-limiting (see `gauss_newton_step`).
     backtrack: Whether to halve the step until the misfit decreases.
+    record: Keep the contrast before and after every step in the history, as
+      ``"nu_before"`` and ``"nu"``, so the run can be replayed; see `trajectory`.
   """
 
   n_steps: int = struct.field(pytree_node=False, default=2)
@@ -287,20 +290,30 @@ class GaussNewton:
     pytree_node=False, default=DEFAULT_BAND_FACTOR
   )
   backtrack: bool = struct.field(pytree_node=False, default=True)
+  record: bool = struct.field(pytree_node=False, default=False)
 
 
 @struct.dataclass
 class QuasiNewton:
-  """BFGS on the misfit, via `jax.scipy.optimize.minimize`.
+  """BFGS on the misfit.
 
   Needs only the gradient, so it works for the simultaneous multi-frequency loss
   where there is no single ``J``.
 
-  Attributes:
+  By default it runs `jax.scipy.optimize.minimize`, a single compiled loop that
+  exposes nothing between its first and last iterate.  With `record` it runs
+  SciPy's BFGS instead, with the loss and gradient still computed by JAX, and
+  keeps every iterate.  The method is the same but the line searches are not
+  (SciPy's is the MINPACK Wolfe search, JAX's a zoom search), so a recorded run
+  follows a slightly different path and its numbers differ in the later digits.
+
+  Args:
     maxiter: Maximum iterations.
+    record: Keep every iterate and its misfit in the history; see `trajectory`.
   """
 
   maxiter: int = struct.field(pytree_node=False, default=50)
+  record: bool = struct.field(pytree_node=False, default=False)
 
 
 Optimizer = GaussNewton | QuasiNewton
@@ -309,15 +322,75 @@ Optimizer = GaussNewton | QuasiNewton
 class InversionResult(NamedTuple):
   """Outcome of an inversion.
 
-  Attributes:
+  Args:
     nu: The reconstructed contrast.
     loss: Final misfit.
-    history: One record per outer step or frequency.
+    history: One record per outer step or frequency.  A recorded run (``record=
+      True``) also keeps the iterates; `trajectory` flattens them.
   """
 
   nu: Array
   loss: float
   history: list[dict]
+
+
+def bfgs_recorded(
+  loss_fn: Callable[[Array], Array], x0: Array, maxiter: int
+) -> tuple[Array, list[dict]]:
+  """BFGS that keeps every iterate: SciPy's driver, JAX's loss and gradient.
+
+  Args:
+    loss_fn: The real scalar misfit, differentiable with `jax.grad`.
+    x0: Initial point.
+    maxiter: Maximum iterations.
+
+  Returns:
+    The final point, and one record per iterate -- the initial point included
+    -- holding ``"iteration"``, ``"loss"``, ``"nu"`` and ``"evaluations"``, the
+    cumulative number of loss-and-gradient evaluations, line searches included.
+  """
+  value_and_grad = jax.jit(jax.value_and_grad(loss_fn))
+  dtype = jnp.asarray(x0).dtype
+  calls = [0]
+
+  def fun(x: np.ndarray) -> tuple[float, np.ndarray]:
+    """Loss and gradient at a host point, as SciPy wants them."""
+    calls[0] += 1
+    value, grad = value_and_grad(jnp.asarray(x, dtype=dtype))
+    return float(value), np.asarray(grad, dtype=np.float64)
+
+  x0_host = np.asarray(x0, dtype=np.float64)
+  history = [
+    {
+      "iteration": 0,
+      "loss": fun(x0_host)[0],
+      "nu": jnp.asarray(x0),
+      "evaluations": calls[0],
+    }
+  ]
+
+  # SciPy passes the full `OptimizeResult` only to a callback whose parameter
+  # is named exactly `intermediate_result`; otherwise it passes just the point.
+  def callback(intermediate_result: scipy.optimize.OptimizeResult) -> None:
+    """Record the iterate SciPy just accepted."""
+    history.append(
+      {
+        "iteration": len(history),
+        "loss": float(intermediate_result.fun),
+        "nu": jnp.asarray(intermediate_result.x, dtype=dtype),
+        "evaluations": calls[0],
+      }
+    )
+
+  result = scipy.optimize.minimize(
+    fun,
+    x0_host,
+    jac=True,
+    method="BFGS",
+    callback=callback,
+    options={"maxiter": maxiter, "gtol": 1e-5},
+  )
+  return jnp.asarray(result.x, dtype=dtype), history
 
 
 def _backtracking(loss_fn, nu, update, loss_before, n_halvings=4):
@@ -351,6 +424,9 @@ def minimize(
   omega = float(params.ls_params.omega)
 
   if isinstance(optimizer, QuasiNewton):
+    if optimizer.record:
+      nu, history = bfgs_recorded(loss_fn, nu0, optimizer.maxiter)
+      return InversionResult(nu=nu, loss=float(loss_fn(nu)), history=history)
     result = jax.scipy.optimize.minimize(
       loss_fn, x0=nu0, method="bfgs", options={"maxiter": optimizer.maxiter}
     )
@@ -377,11 +453,14 @@ def minimize(
       if optimizer.backtrack
       else 1.0
     )
+    record = {"loss_before": loss_before, "step": step}
+    if optimizer.record:
+      record["nu_before"] = nu
     nu = nu + step * update
-
-    history.append(
-      {"loss_before": loss_before, "loss": float(loss_fn(nu)), "step": step}
-    )
+    record["loss"] = float(loss_fn(nu))
+    if optimizer.record:
+      record["nu"] = nu
+    history.append(record)
 
   return InversionResult(nu=nu, loss=float(loss_fn(nu)), history=history)
 
@@ -576,6 +655,7 @@ def frequency_sweep(
   optimizer: Optimizer | None = None,
   band_factor: float | None = None,
   verbose: bool = True,
+  record: bool = False,
 ) -> InversionResult:
   """Invert by sweeping frequency from low to high.
 
@@ -610,9 +690,13 @@ def frequency_sweep(
       could not have known.  ``None`` (the default) leaves the estimate alone;
       see `jax_ls.filters`.
     verbose: Whether to print progress.
+    record: Keep every iterate of every stage, for `trajectory`.  Applies to the
+      default optimiser; a given `optimizer` records according to its own
+      ``record`` field.
 
   Returns:
-    An `InversionResult` whose history has one record per frequency.
+    An `InversionResult` whose history has one record per frequency, each with
+    the stage's own history under ``"steps"``.
   """
   stage_list = as_stages(stages)
   nu = jnp.zeros(domain.n_dof) if nu0 is None else nu0
@@ -628,7 +712,9 @@ def frequency_sweep(
     if band_factor is not None:
       nu = band_limit(domain, stage.omega, nu, factor=band_factor)
 
-    step_optimizer = optimizer or QuasiNewton(maxiter=stage.max_updates)
+    step_optimizer = optimizer or QuasiNewton(
+      maxiter=stage.max_updates, record=record
+    )
     result = minimize(params, data, nu, step_optimizer)
     nu, loss = result.nu, result.loss
 
@@ -678,6 +764,9 @@ def wideband_minimize(
     An `InversionResult`.
   """
   loss_fn = jax.jit(make_wideband_loss(datasets, policy))
+  if optimizer.record:
+    nu, history = bfgs_recorded(loss_fn, nu0, optimizer.maxiter)
+    return InversionResult(nu=nu, loss=float(loss_fn(nu)), history=history)
   result = jax.scipy.optimize.minimize(
     loss_fn, x0=nu0, method="bfgs", options={"maxiter": optimizer.maxiter}
   )
@@ -685,4 +774,89 @@ def wideband_minimize(
     nu=result.x,
     loss=float(loss_fn(result.x)),
     history=[{"iterations": int(result.nit), "loss": float(loss_fn(result.x))}],
+  )
+
+
+# ---------------------------------------------------------------------------
+# Replaying a recorded run.
+# ---------------------------------------------------------------------------
+class Trajectory(NamedTuple):
+  """Every iterate of a recorded inversion, in order.
+
+  Args:
+    nu: The iterates, of shape ``(n_iterates, n_dof)``.
+    loss: The misfit at each iterate.  Across the stages of a sweep these are
+      different objectives, one per frequency, so compare them within a stage.
+    stage: Index of the frequency stage each iterate belongs to; all zero for a
+      single-frequency run.
+    omega: The frequency of each stage, or an empty tuple when not known.
+  """
+
+  nu: Array
+  loss: np.ndarray
+  stage: np.ndarray
+  omega: tuple[float, ...]
+
+  def relative_error(self, truth: Array) -> np.ndarray:
+    """``||nu_k - truth|| / ||truth||`` at every iterate.
+
+    Args:
+      truth: The true contrast.
+
+    Returns:
+      One relative model error per iterate.
+    """
+    diff = jnp.linalg.norm(self.nu - truth[None, :], axis=1)
+    return np.asarray(diff / jnp.linalg.norm(truth))
+
+
+def _stage_iterates(history: list[dict]) -> tuple[list[Array], list[float]]:
+  """Iterates and misfits of one recorded single-frequency run."""
+  if not history:
+    return [], []
+  if "nu_before" in history[0]:  # Gauss-Newton
+    nus = [history[0]["nu_before"]] + [record["nu"] for record in history]
+    losses = [history[0]["loss_before"]] + [r["loss"] for r in history]
+    return nus, losses
+  if "nu" in history[0]:  # recorded BFGS
+    return [r["nu"] for r in history], [r["loss"] for r in history]
+  raise ValueError(
+    "this history kept no iterates: run with record=True "
+    "(QuasiNewton(record=True), GaussNewton(record=True) or "
+    "frequency_sweep(..., record=True))"
+  )
+
+
+def trajectory(result: InversionResult) -> Trajectory:
+  """Flatten a recorded inversion into its sequence of iterates.
+
+  Works for `minimize`, `wideband_minimize` and `frequency_sweep`, as long as
+  the run recorded its iterates.
+
+  Args:
+    result: The outcome of a recorded run.
+
+  Returns:
+    The `Trajectory`.
+
+  Raises:
+    ValueError: If the run did not record its iterates.
+  """
+  history = result.history
+  if history and "steps" in history[0]:  # a frequency sweep
+    nus, losses, stages = [], [], []
+    for index, record in enumerate(history):
+      stage_nus, stage_losses = _stage_iterates(record["steps"])
+      nus += stage_nus
+      losses += stage_losses
+      stages += [index] * len(stage_nus)
+    omegas = tuple(float(record["omega"]) for record in history)
+  else:
+    nus, losses = _stage_iterates(history)
+    stages, omegas = [0] * len(nus), ()
+  return Trajectory(
+    nu=jnp.stack(nus),
+    loss=np.asarray(losses),
+    stage=np.asarray(stages),
+    omega=omegas,
   )

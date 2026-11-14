@@ -331,3 +331,80 @@ class TestWidebandLoss:
 
     err = abs(directional - difference) / abs(difference)
     assert err < 1e-5, f"wideband gradient vs finite differences {err:.2e}"
+
+
+# ---------------------------------------------------------------------------
+# Recording iterates, for replaying a run.
+# ---------------------------------------------------------------------------
+@pytest.fixture(scope="module")
+def recorded_problem():
+  domain = Domain(1.0, 1.0, 24, 24)
+  truth = domain.sample(lambda x, y: 0.5 * jnp.exp(-30 * (x**2 + y**2)))
+  params = jax_ls.make_sweep_params(domain, 12.0, 1.5)
+  return domain, truth, params, jax_ls.near_field_map(params, truth)
+
+
+class TestRecording:
+  def test_recorded_bfgs_keeps_every_iterate(self, recorded_problem):
+    domain, _, params, data = recorded_problem
+    result = jax_ls.minimize(
+      params, data, jnp.zeros(domain.n_dof), jax_ls.QuasiNewton(10, record=True)
+    )
+    history = result.history
+    assert history[0]["iteration"] == 0
+    assert [r["iteration"] for r in history] == list(range(len(history)))
+    assert 2 <= len(history) <= 11
+    losses = np.array([r["loss"] for r in history])
+    assert np.all(np.diff(losses) <= 1e-15), "BFGS must not increase the misfit"
+    assert jnp.allclose(history[-1]["nu"], result.nu)
+    evaluations = [r["evaluations"] for r in history]
+    assert evaluations == sorted(evaluations) and evaluations[-1] >= len(
+      history
+    )
+
+  def test_recorded_loss_matches_the_misfit(self, recorded_problem):
+    domain, _, params, data = recorded_problem
+    result = jax_ls.minimize(
+      params, data, jnp.zeros(domain.n_dof), jax_ls.QuasiNewton(4, record=True)
+    )
+    for record in result.history:
+      expected = float(jax_ls.near_field_l2_loss(params, data, record["nu"]))
+      assert np.isclose(record["loss"], expected, rtol=1e-10)
+
+  def test_recorded_gauss_newton(self, recorded_problem):
+    domain, _, params, data = recorded_problem
+    optimizer = jax_ls.GaussNewton(n_steps=2, record=True)
+    result = jax_ls.minimize(params, data, jnp.zeros(domain.n_dof), optimizer)
+    path = jax_ls.trajectory(result)
+    assert path.nu.shape == (3, domain.n_dof)
+    assert jnp.allclose(path.nu[0], 0.0) and jnp.allclose(
+      path.nu[-1], result.nu
+    )
+    assert path.loss[0] == result.history[0]["loss_before"]
+
+  def test_unrecorded_runs_keep_no_iterates(self, recorded_problem):
+    domain, _, params, data = recorded_problem
+    result = jax_ls.minimize(
+      params, data, jnp.zeros(domain.n_dof), jax_ls.QuasiNewton(3)
+    )
+    assert "nu" not in result.history[0]
+    with pytest.raises(ValueError, match="record=True"):
+      jax_ls.trajectory(result)
+
+  def test_sweep_trajectory_is_labelled_by_stage(self, recorded_problem):
+    domain, truth, _, _ = recorded_problem
+    result = jax_ls.frequency_sweep(
+      domain,
+      {6.0: 3, 12.0: 4},
+      lambda p: jax_ls.near_field_map(p, truth),
+      radius=1.5,
+      record=True,
+      verbose=False,
+    )
+    path = jax_ls.trajectory(result)
+    assert path.omega == (6.0, 12.0)
+    assert path.stage[0] == 0 and path.stage[-1] == 1
+    assert np.all(np.diff(path.stage) >= 0)
+    assert jnp.allclose(path.nu[-1], result.nu)
+    errors = path.relative_error(truth)
+    assert errors[0] == pytest.approx(1.0) and errors[-1] < errors[0]

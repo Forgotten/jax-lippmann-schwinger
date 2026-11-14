@@ -34,6 +34,9 @@ from .inversion import (
   make_sweep_params,
   minimize,
   recursive_linearization,
+  Trajectory,
+  bfgs_recorded,
+  trajectory,
   wideband_minimize,
 )
 from .jax_ls import (
@@ -158,5 +161,8 @@ __all__ = [
   "make_sweep_params",
   "frequency_sweep",
   "recursive_linearization",
+  "Trajectory",
+  "bfgs_recorded",
+  "trajectory",
   "wideband_minimize",
 ]
