@@ -25,6 +25,10 @@ dependencies = [
   "flax",
 ]
 
+[project.optional-dependencies]
+# For `jax_ls.animations`, which the solver itself does not need.
+viz = ["matplotlib", "pillow"]
+
 [project.urls]
 Homepage = "https://github.com/Forgotten/jax-lippmann-schwinger"
 

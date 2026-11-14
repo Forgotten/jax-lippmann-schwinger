@@ -96,6 +96,28 @@ every solve at one contrast: `linearize`, the near-field derivative rules and th
 gradient each factor once. See
 [`notebooks/block_inverse_solver_notebook.ipynb`](notebooks/block_inverse_solver_notebook.ipynb).
 
+## Watching an inversion
+
+The optimisers can keep every iterate: `QuasiNewton(record=True)`, `GaussNewton(record=True)`
+or `frequency_sweep(..., record=True)`. `jax_ls.trajectory` turns a recorded result into the
+sequence of iterates and misfits, and `jax_ls.animations` replays it as a GIF, beside the true
+contrast and with the error and misfit drawn as they decay:
+
+```python
+from jax_ls import animations  # needs the viz extra: pip install "jax-ls[viz]"
+
+result = jax_ls.minimize(params, data, nu0, jax_ls.QuasiNewton(maxiter=50, record=True))
+animations.animate_reconstruction(
+  domain, nu_true, {"BFGS": jax_ls.trajectory(result)}, "reconstruction.gif"
+)
+```
+
+A recorded BFGS run uses SciPy's BFGS driver, with the loss and gradient still computed by
+JAX, because `jax.scipy.optimize.minimize` runs as one compiled loop and exposes no
+intermediate iterates. The two line searches differ, so a recorded run follows a slightly
+different path. The same module draws the nested-dissection animations of the block-inverse
+notebook.
+
 ## Organization 
 
 This repository is organized as follows: 
