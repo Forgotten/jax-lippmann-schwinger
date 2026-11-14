@@ -35,8 +35,10 @@ class TestAdjoint:
     key1, key2 = random.split(rng_key)
     tangent = random.normal(key1, shape=(nu_vect.shape[0],))
     cotangent = random.normal(
-      key2, shape=(params_nf.n_theta**2,)
-    ) + 1j * random.normal(key2, shape=(params_nf.n_theta**2,))
+      key2, shape=(params_nf.n_sources * params_nf.n_receivers,)
+    ) + 1j * random.normal(
+      key2, shape=(params_nf.n_sources * params_nf.n_receivers,)
+    )
 
     lhs = jnp.sum(jnp.conj(cotangent) * jacobian(tangent))
     rhs = jnp.sum(
@@ -69,8 +71,10 @@ class TestAdjoint:
     key1, key2 = random.split(rng_key)
     tangent = random.normal(key1, shape=(nu_vect.shape[0],))
     cotangent = random.normal(
-      key2, shape=(params_nf.n_theta**2,)
-    ) + 1j * random.normal(key2, shape=(params_nf.n_theta**2,))
+      key2, shape=(params_nf.n_sources * params_nf.n_receivers,)
+    ) + 1j * random.normal(
+      key2, shape=(params_nf.n_sources * params_nf.n_receivers,)
+    )
 
     lhs = jnp.sum(cotangent * jacobian(tangent))
     rhs = jnp.sum(vjp_fn(cotangent)[0] * tangent)

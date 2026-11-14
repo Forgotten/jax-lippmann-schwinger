@@ -73,11 +73,7 @@ __all__ = [
   "ls_solver_adj",
   "ls_solver_with_info",
   "ls_solver_adj_with_info",
-  "ls_solver_batched",
-  "ls_solver_batched_adj",
-  "ls_solver_batched_sigma",
   "ls_solver_field",
-  "ls_solver_u",
 ]
 
 
@@ -582,16 +578,3 @@ def ls_solver_field_jvp(
   delta_u = ls_solver_field(params, nu_vect, rhs)
 
   return u, delta_u
-
-
-# ---------------------------------------------------------------------------
-# Deprecated aliases.
-#
-# `ls_solver_batched` and `ls_solver_batched_sigma` were separate copies of
-# `ls_solver`: `solve_method="batched"` is already the GMRES default, and
-# batching over right-hand sides is done with `vmap`.
-# ---------------------------------------------------------------------------
-ls_solver_batched = ls_solver
-ls_solver_batched_sigma = ls_solver
-ls_solver_batched_adj = ls_solver_adj
-ls_solver_u = ls_solver_field

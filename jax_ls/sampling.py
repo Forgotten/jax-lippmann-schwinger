@@ -1,6 +1,6 @@
 """Where the medium is probed from, and where the field is measured.
 
-Two roles that the near-field map used to conflate into a single ``G_sample``
+Two roles that the near-field map used to conflate into a single sampling
 matrix:
 
 * an `IncidentField` says *what illuminates the medium* -- one column of
@@ -16,7 +16,7 @@ receivers.
 Sign convention
 ---------------
 Both matrices store **minus** the outgoing fundamental solution, matching the
-original ``G_sample = -green_function(R)``.  The two signs cancel in the
+original single sampling matrix, ``-green_function(R)``.  The two signs cancel in the
 near-field product, so the convention is invisible as long as the data comes
 from this same forward map.  It is *not* invisible against externally measured
 data: the map returns minus the physical scattered field.  Preserved here

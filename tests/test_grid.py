@@ -178,7 +178,7 @@ class TestRectangularDomain:
     nu_vect = jnp.reshape(perturbation_fn(ls.X, ls.Y), (-1,))
     near_field = jax_ls.near_field_map(params_nf_rect, nu_vect)
 
-    assert params_nf_rect.G_sample.shape == (ls.n_dof, m)
+    assert params_nf_rect.sampling_kernel.shape == (ls.n_dof, m)
     assert near_field.shape == (m, m)
     assert bool(jnp.all(jnp.isfinite(jnp.abs(near_field))))
 

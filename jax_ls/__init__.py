@@ -54,11 +54,7 @@ from .jax_ls import (
   ls_solver_adj,
   ls_solver_adj_with_info,
   ls_solver_with_info,
-  ls_solver_batched,
-  ls_solver_batched_adj,
-  ls_solver_batched_sigma,
   ls_solver_field,
-  ls_solver_u,
 )
 from .sampling import (
   IncidentField,
@@ -76,13 +72,9 @@ from .near_field import (
   make_near_field_params,
   near_field_l2_loss,
   near_field_l2_loss_and_grad,
-  near_field_l2_loss_grad,
   near_field_map,
   near_field_map_forward_mode,
   near_field_map_reverse_mode,
-  near_field_map_vect,
-  near_field_map_vect_jax,
-  near_field_map_vect_vjp,
 )
 
 __all__ = [
@@ -167,13 +159,4 @@ __all__ = [
   "frequency_sweep",
   "recursive_linearization",
   "wideband_minimize",
-  # Deprecated aliases, kept so existing scripts keep working.
-  "ls_solver_batched",
-  "ls_solver_batched_adj",
-  "ls_solver_batched_sigma",
-  "ls_solver_u",
-  "near_field_l2_loss_grad",
-  "near_field_map_vect",
-  "near_field_map_vect_jax",
-  "near_field_map_vect_vjp",
 ]

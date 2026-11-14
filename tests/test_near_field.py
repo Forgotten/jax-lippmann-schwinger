@@ -31,15 +31,15 @@ class TestGreenFunction:
     err = float(np.max(np.abs(g - expected)))
     assert err < 1e-10, f"Green's function error {err:.2e} exceeds 1e-10"
 
-  def test_g_sample_is_minus_the_green_function(self, params_nf_small):
-    """G_sample stores -G; pin the sign convention."""
+  def test_sampling_kernel_is_minus_the_green_function(self, params_nf_small):
+    """The sampling kernel stores -G; pin the sign convention."""
     params = params_nf_small
     ls = params.ls_params
     omega = float(ls.omega)
 
-    n_theta = params.n_theta
-    d_theta = 2 * np.pi / n_theta
-    theta = np.linspace(np.pi, 3 * np.pi - d_theta, n_theta)
+    n_receivers = params.n_receivers
+    d_theta = 2 * np.pi / n_receivers
+    theta = np.linspace(np.pi, 3 * np.pi - d_theta, n_receivers)
     x_s = np.cos(theta[0]), np.sin(theta[0])  # radius 1
 
     r = np.sqrt(
@@ -47,19 +47,19 @@ class TestGreenFunction:
       + (np.asarray(ls.Y).reshape(-1) - x_s[1]) ** 2
     )
     expected = -(1j / 4) * sp.special.hankel1(0, omega * r)
-    got = np.asarray(params.G_sample[:, 0])
+    got = np.asarray(params.sampling_kernel[:, 0])
     err = float(np.max(np.abs(got - expected)) / np.max(np.abs(expected)))
-    assert err < 1e-10, f"G_sample sign/scale error {err:.2e}"
+    assert err < 1e-10, f"sampling kernel sign/scale error {err:.2e}"
 
 
 class TestInitParamsNearField:
   """Tests for init_params_near_field."""
 
-  def test_g_sample_shape(self, params_nf_small):
-    """G_sample should be (n*m, n_theta)."""
+  def test_sampling_kernel_shape(self, params_nf_small):
+    """The sampling kernel is (n*m, n_receivers), sources and receivers equal."""
     n = 2**6
-    assert params_nf_small.G_sample.shape == (n * n, n)
-    assert params_nf_small.n_theta == n
+    assert params_nf_small.sampling_kernel.shape == (n * n, n)
+    assert params_nf_small.n_sources == params_nf_small.n_receivers == n
 
   def test_spacing_delegates_to_ls_params(self, params_nf_small):
     """The spacing is stored once, on the Lippmann-Schwinger parameters."""
@@ -129,7 +129,9 @@ class TestNearFieldMap:
     nu_vect = jnp.reshape(perturbation_fn(ls.X, ls.Y), (-1,))
 
     rhs = (
-      -(float(ls.omega) ** 2) * nu_vect.reshape((-1, 1)) * params_nf.G_sample
+      -(float(ls.omega) ** 2)
+      * nu_vect.reshape((-1, 1))
+      * params_nf.incident_field
     )
     solve = jax.vmap(
       partial(jax_ls.ls_solver, ls, nu_vect), in_axes=1, out_axes=1

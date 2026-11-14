@@ -39,8 +39,8 @@ picking the wrong one silently produces a wrong derivative:
 Sign convention
 ---------------
 ``green_function`` is the fundamental solution, ``Delta G + omega^2 G = -delta``.
-``NearFieldParams.G_sample`` stores ``-G`` sampled between the grid and the
-observation manifold, which is why the sampling contractions below carry an
+``NearFieldParams.sampling_kernel`` stores ``-G`` sampled between the grid and
+the observation manifold, which is why the sampling contractions below carry an
 explicit minus sign.
 """
 
@@ -70,7 +70,7 @@ class NearFieldParams:
 
   The incident field and the sampling kernel are separate: sources and
   receivers may differ in number, position and kind.  When they coincide the
-  two matrices are equal and `G_sample` returns either.
+  two matrices are equal; `is_reciprocal` says whether they do.
 
   Attributes:
     ls_params: Lippmann-Schwinger configuration.
@@ -126,27 +126,11 @@ class NearFieldParams:
   def is_reciprocal(self) -> bool:
     """Whether sources and receivers coincide.
 
-    Only then is the near-field matrix symmetric, and only then is `G_sample`
-    meaningful.
+    Only then is the near-field matrix symmetric.
     """
     return self.incident_field.shape == self.sampling_kernel.shape and bool(
       jnp.array_equal(self.incident_field, self.sampling_kernel)
     )
-
-  @property
-  def n_theta(self) -> int:
-    """Deprecated: the common number of sources and receivers."""
-    if self.n_sources != self.n_receivers:
-      raise ValueError(
-        f"`n_theta` is ambiguous with {self.n_sources} sources and "
-        f"{self.n_receivers} receivers; use `n_sources` or `n_receivers`."
-      )
-    return self.n_receivers
-
-  @property
-  def G_sample(self) -> Array:
-    """Deprecated: the sampling kernel, which used to serve both roles."""
-    return self.sampling_kernel
 
 
 def make_near_field_params(
@@ -853,17 +837,3 @@ def near_field_l2_loss_and_grad(
   loss, residuals = near_field_l2_loss_fwd(params, u_data, nu_vect)
   (gradient,) = near_field_l2_loss_bwd(params, u_data, residuals, 1.0)
   return loss, gradient
-
-
-# ---------------------------------------------------------------------------
-# Deprecated aliases.
-#
-# `near_field_map_vect_vjp` used to carry a `custom_vjp` implementing the
-# Hermitian adjoint J^H, which made `jax.grad` through it silently wrong.  The
-# alias now points at the reverse-mode map, which is correct under `jax.grad`;
-# code that wanted J^H should call `born_adjoint`.
-# ---------------------------------------------------------------------------
-near_field_map_vect = near_field_map_forward_mode
-near_field_map_vect_jax = near_field_map_reverse_mode
-near_field_map_vect_vjp = near_field_map_reverse_mode
-near_field_l2_loss_grad = near_field_l2_loss_and_grad

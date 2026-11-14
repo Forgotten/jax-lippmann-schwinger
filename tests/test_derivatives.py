@@ -83,10 +83,11 @@ class TestForwardMode:
     The residual asymmetry is set by the GMRES tolerance (1e-5 by default), not
     by the discretisation, hence the tolerance below.
     """
-    n_theta = setup["params"].n_theta
+    n_sources = setup["params"].n_sources
+    n_receivers = setup["params"].n_receivers
     tangent = jax_ls.born_linearization(
       setup["params"], setup["nu"], setup["delta_nu"]
-    ).reshape((n_theta, n_theta))
+    ).reshape((n_sources, n_receivers))
     err = float(jnp.linalg.norm(tangent - tangent.T) / jnp.linalg.norm(tangent))
     assert err < 1e-4, f"linearised map is not reciprocal, asymmetry {err:.2e}"
 
@@ -101,9 +102,9 @@ class TestHermitianAdjoint:
 
     key1, key2 = random.split(rng_key)
     tangent = random.normal(key1, (nu.shape[0],))
-    cotangent = random.normal(key2, (params.n_theta**2,)) + 1j * random.normal(
-      key1, (params.n_theta**2,)
-    )
+    cotangent = random.normal(
+      key2, (params.n_sources * params.n_receivers,)
+    ) + 1j * random.normal(key1, (params.n_sources * params.n_receivers,))
 
     lhs = jnp.sum(jnp.conj(cotangent) * jacobian(tangent))
     rhs = jnp.sum(
@@ -115,11 +116,11 @@ class TestHermitianAdjoint:
   def test_accepts_matrix_and_flat_cotangents(self, setup, rng_key):
     """The cotangent may be given flat or as a matrix."""
     params, nu = setup["params"], setup["nu"]
-    n_theta = params.n_theta
-    flat = random.normal(rng_key, (n_theta**2,)) + 0j
+    n_sources, n_receivers = params.n_sources, params.n_receivers
+    flat = random.normal(rng_key, (n_sources * n_receivers,)) + 0j
 
     from_flat = jax_ls.born_adjoint(params, nu, flat)
-    from_matrix = jax_ls.born_adjoint(params, nu, flat.reshape((n_theta, -1)))
+    from_matrix = jax_ls.born_adjoint(params, nu, flat.reshape((n_sources, -1)))
     assert float(jnp.linalg.norm(from_flat - from_matrix)) < 1e-12
 
 
@@ -134,9 +135,9 @@ class TestReverseMode:
 
     key1, key2 = random.split(rng_key)
     tangent = random.normal(key1, (nu.shape[0],))
-    cotangent = random.normal(key2, (params.n_theta**2,)) + 1j * random.normal(
-      key1, (params.n_theta**2,)
-    )
+    cotangent = random.normal(
+      key2, (params.n_sources * params.n_receivers,)
+    ) + 1j * random.normal(key1, (params.n_sources * params.n_receivers,))
 
     lhs = jnp.sum(cotangent * jacobian(tangent))
     rhs = jnp.sum(vjp_fn(cotangent)[0] * tangent)
@@ -178,8 +179,8 @@ class TestReverseMode:
     _, vjp_fn = jax.vjp(setup["reverse"], nu)
 
     cotangent = random.normal(
-      rng_key, (params.n_theta**2,)
-    ) + 1j * random.normal(rng_key, (params.n_theta**2,))
+      rng_key, (params.n_sources * params.n_receivers,)
+    ) + 1j * random.normal(rng_key, (params.n_sources * params.n_receivers,))
 
     transpose = vjp_fn(cotangent)[0]
     hermitian = jax_ls.born_adjoint(params, nu, cotangent)
@@ -227,19 +228,6 @@ class TestLossGradient:
       jnp.linalg.norm(gradient - expected_grad) / jnp.linalg.norm(expected_grad)
     )
     assert err < 1e-12, f"fused gradient differs by {err:.2e}"
-
-
-class TestDeprecatedAliases:
-  """The old names must keep resolving, to the corrected implementations."""
-
-  def test_aliases_point_at_the_new_functions(self):
-    assert jax_ls.near_field_map_vect is jax_ls.near_field_map_forward_mode
-    assert jax_ls.near_field_map_vect_jax is jax_ls.near_field_map_reverse_mode
-    assert jax_ls.near_field_map_vect_vjp is jax_ls.near_field_map_reverse_mode
-    assert jax_ls.ls_solver_batched is jax_ls.ls_solver
-    assert jax_ls.ls_solver_batched_sigma is jax_ls.ls_solver
-    assert jax_ls.ls_solver_batched_adj is jax_ls.ls_solver_adj
-    assert jax_ls.ls_solver_u is jax_ls.ls_solver_field
 
 
 class TestLinearization:

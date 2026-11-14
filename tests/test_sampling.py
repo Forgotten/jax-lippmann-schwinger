@@ -123,7 +123,7 @@ class TestIncidentField:
 class TestAsymmetricGeometry:
   """Sources and receivers as genuinely different sets.
 
-  None of this was expressible before: `G_sample` served both roles, so the
+  None of this was expressible before: one sampling matrix served both roles, so the
   shapes were forced equal and the adjoint silently relied on the near-field
   matrix being symmetric.
   """
@@ -155,11 +155,6 @@ class TestAsymmetricGeometry:
 
     symmetric = jax_ls.init_params_near_field(1.0, 1.0, 48, 48, 1.5, 16, 30.0)
     assert symmetric.is_reciprocal
-
-  def test_n_theta_refuses_to_guess(self, params_split):
-    """The ambiguous accessor must raise rather than pick one."""
-    with pytest.raises(ValueError, match="ambiguous"):
-      _ = params_split.n_theta
 
   def test_adjoint_identity_without_the_reciprocity_shortcut(
     self, params_split, contrast, rng_key
