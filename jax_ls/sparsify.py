@@ -610,6 +610,12 @@ class SparsifyingStencils:
         far = np.setdiff1d(np.arange(n_dof), points)
         u, s, _ = np.linalg.svd(rows[:, far], full_matrices=False)
         weights = np.conj(u[:, -1])
+        # A singular vector is defined only up to a complex phase, and the SVD
+        # does not pick the same one every time.  The preconditioner does not
+        # care (a row phase cancels in Acal^T M^{-T}), but reproducibility does:
+        # fix the phase so the centre weight is real and positive.
+        centre = weights[list(points).index(iy * n + ix)]
+        weights = weights * (abs(centre) / centre)
         alpha_types[ty, tx] = (valid, weights)
         local_types[ty, tx] = weights @ rows[:, points]
         quality.append(s[-1] / s[0])

@@ -197,6 +197,18 @@ class TestSparsification:
     assert np.allclose(alpha, alpha.T, atol=1e-8)
     assert np.allclose(alpha, alpha[::-1, ::-1], rtol=1e-2, atol=0)
 
+  def test_stencils_are_reproducible(self):
+    """A singular vector has an arbitrary phase; the stencils fix it."""
+    first = jax_ls.init_params(1.0, 1.0, 24, 24, 20.0, sparsify=True).sparsifier
+    second = jax_ls.init_params(
+      1.0, 1.0, 24, 24, 20.0, sparsify=True
+    ).sparsifier
+    assert np.allclose(
+      np.asarray(first.alpha), np.asarray(second.alpha), atol=1e-12
+    )
+    centre = np.asarray(first.alpha)[4]
+    assert np.allclose(centre.imag, 0.0, atol=1e-12) and np.all(centre.real > 0)
+
   def test_too_small_a_grid_is_rejected(self):
     params = jax_ls.init_params(1.0, 1.0, 2, 8, 5.0)
     with pytest.raises(ValueError, match="3x3"):
