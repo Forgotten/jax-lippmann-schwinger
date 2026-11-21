@@ -158,6 +158,7 @@ def init_params(
   sparsify: bool = False,
   refactor_rtol: float = 0.0,
   sparsify_backend: str = "auto",
+  sparsify_factor_on: str = "default",
 ) -> LippSchwinParams:
   """Initialize the parameters for the Lippmann-Schwinger solver.
 
@@ -184,6 +185,10 @@ def init_params(
       within this relative distance; see `jax_ls.sparsify`.
     sparsify_backend: With `sparsify`, how the sparse matrix is factored:
       ``"superlu"`` (host), ``"block_inverse"`` (device) or ``"auto"``.
+    sparsify_factor_on: With ``"block_inverse"``, where the factorisation runs:
+      ``"default"`` (JAX's default device), ``"cpu"`` (the host, in
+      complex128, with SciPy's LAPACK) or ``"accelerate"`` (the host, with
+      Apple Accelerate's LAPACK; macOS only).  The solves stay on the device.
 
   Returns:
     A LippSchwinParams object containing the initialized parameters.
@@ -199,7 +204,10 @@ def init_params(
   params = LippSchwinParams(kernel=kernel, omega=omega)
   if sparsify:
     params = with_sparsifying_preconditioner(
-      params, refactor_rtol, backend=sparsify_backend
+      params,
+      refactor_rtol,
+      backend=sparsify_backend,
+      factor_on=sparsify_factor_on,
     )
   return params
 
@@ -209,6 +217,7 @@ def with_sparsifying_preconditioner(
   refactor_rtol: float = 0.0,
   backend: str = "auto",
   leaf: int | None = None,
+  factor_on: str = "default",
 ) -> LippSchwinParams:
   """The same parameters, with Ying's sparsifying preconditioner attached.
 
@@ -225,6 +234,14 @@ def with_sparsifying_preconditioner(
       the whole preconditioner stays on the device; ``"auto"`` picks the latter
       on accelerators.
     leaf: Leaf size of the dissection tree for ``"block_inverse"``.
+    factor_on: For ``"block_inverse"``, factor on JAX's default device
+      (``"default"``) or on the host CPU in complex128 (``"cpu"``).  Use
+      ``"cpu"`` on accelerators with weak double precision: the batched fp64 LU
+      is then their slowest step, while the solves, which stay on the device,
+      are matrix products.  ``"accelerate"`` factors on the host too, with
+      Apple Accelerate's LAPACK; macOS only.  It helps when SciPy is not
+      already linked against Accelerate (a conda install uses OpenBLAS); with
+      the pip wheels on macOS 14+, ``"cpu"`` already uses Accelerate.
 
   Returns:
     A copy of `params` whose solves are preconditioned.
@@ -234,6 +251,7 @@ def with_sparsifying_preconditioner(
       params.kernel,
       refactor_rtol,
       backend=backend,
+      factor_on=factor_on,
       **({} if leaf is None else {"leaf": leaf}),
     )
   )

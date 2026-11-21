@@ -38,6 +38,10 @@ Homepage = "https://github.com/Forgotten/jax-lippmann-schwinger"
 [tool.setuptools.packages.find]
 include = ["jax_ls*"]
 
+# The C source of the Accelerate shim, compiled on first use on macOS.
+[tool.setuptools.package-data]
+jax_ls = ["_accelerate_fronts.c"]
+
 [tool.ruff]
 line-length = 80
 indent-width = 2

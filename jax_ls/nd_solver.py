@@ -69,16 +69,20 @@ Jitting
 ordinary pytree arguments; they compile once per grid and leaf size.
 """
 
+import itertools
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from functools import partial
 
 import numpy as np
+import scipy.linalg
 
 import jax
 import jax.numpy as jnp
 
 from flax import struct
+
+from . import accelerate
 
 Array = jax.Array
 
@@ -90,6 +94,20 @@ OFFSETS = tuple((dy, dx) for dy in (-1, 0, 1) for dx in (-1, 0, 1))
 DEFAULT_LEAF = 8
 
 MODES = ("N", "T", "H")
+
+# Where a factorisation is computed; see `factorize` and `factorize_on_cpu`.
+#   "default"    -- JAX's default device, in `jax.numpy`.
+#   "cpu"        -- the host CPU, with the LAPACK SciPy is linked against.
+#   "accelerate" -- the host CPU, with Apple Accelerate's LAPACK; macOS only.
+FACTOR_ON = ("default", "cpu", "accelerate")
+
+# The host LAPACK implementations `factorize_host` can use.
+HOST_LAPACKS = ("scipy", "accelerate")
+
+# NumPy copies of every structure's index maps, for factorising on the host.
+# A structure refers to its entry through the static `NDStructure.host_key`.
+_HOST_STRUCTURES: dict[int, list[dict]] = {}
+_HOST_KEYS = itertools.count()
 
 
 # ---------------------------------------------------------------------------
@@ -291,12 +309,15 @@ class NDStructure:
     m: Rows of the grid.
     n: Columns of the grid.
     leaf: Leaf size the tree was built with.
+    host_key: Handle of the host copies of the index maps, used by
+      `factorize_on_cpu`; -1 when there are none.
   """
 
   levels: tuple[LevelStructure, ...]
   m: int = struct.field(pytree_node=False)
   n: int = struct.field(pytree_node=False)
   leaf: int = struct.field(pytree_node=False, default=DEFAULT_LEAF)
+  host_key: int = struct.field(pytree_node=False, default=-1)
 
   @property
   def n_dof(self) -> int:
@@ -424,7 +445,7 @@ class NDStructure:
     )
     owner_depth = depth_of[owner]
 
-    levels = []
+    levels, host_levels = [], []
     for d in depths:
       level_nodes = by_depth[d]
       k_level = len(level_nodes)
@@ -474,6 +495,16 @@ class NDStructure:
       else:
         child_target = np.zeros(0, dtype=np.int64)
 
+      host_levels.append(
+        {
+          "shape": (k_level, s_level, b_level),
+          "entry_source": entry_source.astype(np.int64),
+          "entry_target": entry_target.astype(np.int64),
+          "child_target": child_target.astype(np.int64),
+          "pad_diagonal": np.array(pad_diagonal, dtype=np.int64),
+          "separator_valid": separator_valid,
+        }
+      )
       levels.append(
         LevelStructure(
           separator_idx=jnp.asarray(separator_idx, dtype=jnp.int32),
@@ -487,7 +518,9 @@ class NDStructure:
           separator_valid=jnp.asarray(separator_valid),
         )
       )
-    return cls(levels=tuple(levels), m=m, n=n, leaf=leaf)
+    host_key = next(_HOST_KEYS)
+    _HOST_STRUCTURES[host_key] = host_levels
+    return cls(levels=tuple(levels), m=m, n=n, leaf=leaf, host_key=host_key)
 
 
 # ---------------------------------------------------------------------------
@@ -683,6 +716,185 @@ def factorize(structure: NDStructure, coefficients: Array) -> NDFactor:
       )
     )
   return NDFactor(levels=tuple(levels), growth=growth, pivot_ratio=pivot_ratio)
+
+
+# ---------------------------------------------------------------------------
+# The same factorisation on the host CPU.
+# ---------------------------------------------------------------------------
+def _factor_fronts_scipy(
+  f_ss: np.ndarray, f_sb: np.ndarray, f_bs: np.ndarray, valid: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+  """Factor a level of fronts with SciPy's LAPACK, one front at a time.
+
+  Args:
+    f_ss: Separator blocks, ``(k, s, s)``.
+    f_sb: Separator-to-boundary blocks, ``(k, s, b)``.
+    f_bs: Boundary-to-separator blocks, ``(k, b, s)``.
+    valid: Which separator points are real rather than padding, ``(k, s)``.
+
+  Returns:
+    ``(inverse, upper, lower, growth, pivot_ratio)``, as
+    `jax_ls.accelerate.factor_fronts`.
+
+  Raises:
+    np.linalg.LinAlgError: If a front's ``F_SS`` is exactly singular.
+  """
+  getrf, getrs = scipy.linalg.get_lapack_funcs(
+    ("getrf", "getrs"), (np.empty(0, np.complex128),)
+  )
+  k, s, b = f_sb.shape
+  inverse = np.empty((k, s, s), dtype=np.complex128)
+  upper = np.empty((k, s, b), dtype=np.complex128)
+  lower_t = np.empty((k, s, b), dtype=np.complex128)
+  growth, pivot_ratio = np.empty(k), np.empty(k)
+  identity = np.eye(s, dtype=np.complex128)
+  for i in range(k):
+    lu, piv, info = getrf(f_ss[i])
+    if info > 0:
+      raise np.linalg.LinAlgError(
+        f"a front's diagonal block is exactly singular (getrf info {info})"
+      )
+    inverse[i] = getrs(lu, piv, identity)[0]
+    upper[i] = getrs(lu, piv, f_sb[i])[0]
+    lower_t[i] = getrs(lu, piv, f_bs[i].T, trans=1)[0]  # F_SS^{-T} F_BS^T
+    rows = valid[i]
+    diagonal = np.abs(np.diagonal(lu))[rows]
+    largest = np.abs(f_ss[i][np.ix_(rows, rows)]).max()
+    growth[i] = np.abs(np.triu(lu)).max() / max(largest, 1e-300)
+    pivot_ratio[i] = diagonal.min() / diagonal.max()
+  return inverse, upper, np.swapaxes(lower_t, 1, 2), growth, pivot_ratio
+
+
+def factorize_host(
+  host_key: int, coefficients: np.ndarray, lapack: str = "scipy"
+) -> tuple[list[np.ndarray], float, float]:
+  """`factorize` in NumPy and LAPACK, always in complex128, on the host CPU.
+
+  The same algorithm: fronts assembled level by level, each ``F_SS`` factored
+  with partial pivoting (LAPACK ``getrf``), and the three stored blocks formed
+  by triangular solves against it (``getrs``).  One LAPACK call per front, so
+  the large fronts near the root get blocked, multithreaded LAPACK.
+
+  Args:
+    host_key: `NDStructure.host_key` of the grid's structure.
+    coefficients: Stencil weights, of shape ``(9, m, n)`` or ``(9, N)``.
+    lapack: ``"scipy"``, the LAPACK SciPy is linked against (OpenBLAS, MKL or
+      Accelerate, depending on the install), one front per Python call; or
+      ``"accelerate"``, Apple Accelerate through `jax_ls.accelerate`, one
+      level per call with the fronts factored in parallel.  macOS only.
+
+  Returns:
+    The stored blocks, ``[inverse, lower, upper]`` for each level in turn
+    (deepest first), and the worst element growth and pivot ratio.
+
+  Raises:
+    ValueError: If `lapack` is unknown.
+  """
+  if lapack not in HOST_LAPACKS:
+    raise ValueError(f"lapack must be one of {HOST_LAPACKS}, got {lapack!r}")
+  factor_fronts = (
+    accelerate.factor_fronts if lapack == "accelerate" else _factor_fronts_scipy
+  )
+  levels = _HOST_STRUCTURES[host_key]
+  values = np.asarray(coefficients).reshape(-1).astype(np.complex128)
+  blocks, update = [], None
+  growth, pivot_ratio = 1.0, 1.0
+  for lv in levels:
+    k, s, b = lv["shape"]
+    f = s + b
+    flat = np.zeros(k * f * f + 1, dtype=np.complex128)
+    # Original entries land in distinct slots.  The children's updates do not:
+    # siblings both border their parent's separator, so their Schur
+    # complements add into the same entries -- hence a summing scatter.
+    flat[lv["entry_target"]] += values[lv["entry_source"]]
+    if update is not None:
+      targets, contributions = lv["child_target"], update.reshape(-1)
+      flat += np.bincount(targets, contributions.real, flat.size)
+      flat += 1j * np.bincount(targets, contributions.imag, flat.size)
+    flat[lv["pad_diagonal"]] = 1.0
+    fronts = flat[:-1].reshape((k, f, f))
+    f_ss, f_sb = fronts[:, :s, :s], fronts[:, :s, s:]
+    f_bs, f_bb = fronts[:, s:, :s], fronts[:, s:, s:]
+    valid = lv["separator_valid"]
+
+    inverse, upper, lower, front_growth, front_ratio = factor_fronts(
+      f_ss, f_sb, f_bs, valid
+    )
+    growth = max(growth, float(front_growth.max()))
+    pivot_ratio = min(pivot_ratio, float(front_ratio.min()))
+    inverse *= valid[:, :, None]  # padded rows stay inert
+    update = f_bb - f_bs @ upper
+    blocks += [inverse, lower, upper]
+  return blocks, float(growth), float(pivot_ratio)
+
+
+def factorize_on_cpu(
+  structure: NDStructure, coefficients: Array, lapack: str = "scipy"
+) -> NDFactor:
+  """`factorize`, computed on the host CPU in complex128; the result on device.
+
+  For accelerators with weak double precision.  A consumer or workstation GPU
+  runs fp64 at a small fraction of its fp32 rate, and the batched complex128 LU
+  of the top levels is then the slowest step of the whole preconditioner.  Here
+  the factorisation runs in NumPy and LAPACK on the host, through
+  `jax.pure_callback`, so it may be called inside `jax.jit`; the stored blocks
+  are then copied to the default device, where every `solve` -- batched matrix
+  products, once per GMRES iteration -- runs as before.  The copy is the
+  factor's size once per factorisation: about 140 MiB at n = 255.
+
+  Args:
+    structure: The symbolic analysis of the grid, from `NDStructure.create`.
+    coefficients: The stencil weights, of shape ``(9, m, n)`` or ``(9, N)``.
+    lapack: Which host LAPACK factors the fronts: ``"scipy"`` or
+      ``"accelerate"`` (macOS only); see `factorize_host`.
+
+  Returns:
+    The factorisation, in the dtype `factorize` would give.
+
+  Raises:
+    ValueError: If the structure has no host copy (it was not built by
+      `NDStructure.create`), or `lapack` is unknown.
+    RuntimeError: For ``"accelerate"``, when Accelerate is unavailable.
+  """
+  if lapack not in HOST_LAPACKS:
+    raise ValueError(f"lapack must be one of {HOST_LAPACKS}, got {lapack!r}")
+  if lapack == "accelerate":
+    accelerate.load()  # fail here, not inside the callback
+  if structure.host_key not in _HOST_STRUCTURES:
+    raise ValueError("this structure has no host copy; build it with create()")
+  dtype = jnp.result_type(jnp.asarray(coefficients).dtype, jnp.complex64)
+  real = jnp.finfo(dtype).dtype
+  shapes = []
+  for lv in structure.levels:
+    k, s, b = lv.shape
+    shapes += [(k, s, s), (k, b, s), (k, s, b)]
+  result_shape = [jax.ShapeDtypeStruct(shape, dtype) for shape in shapes]
+  result_shape += [jax.ShapeDtypeStruct((), real)] * 2
+
+  def host(coefficients: np.ndarray) -> list[np.ndarray]:
+    """Factor on the host, and cast back to the requested precision."""
+    blocks, growth, ratio = factorize_host(
+      structure.host_key, coefficients, lapack
+    )
+    return [block.astype(dtype) for block in blocks] + [
+      np.asarray(growth, dtype=real),
+      np.asarray(ratio, dtype=real),
+    ]
+
+  out = jax.pure_callback(
+    host, result_shape, jnp.asarray(coefficients), vmap_method="sequential"
+  )
+  levels = [
+    LevelFactor(
+      separator_idx=lv.separator_idx,
+      boundary_idx=lv.boundary_idx,
+      inverse=out[3 * i],
+      lower=out[3 * i + 1],
+      upper=out[3 * i + 2],
+    )
+    for i, lv in enumerate(structure.levels)
+  ]
+  return NDFactor(levels=tuple(levels), growth=out[-2], pivot_ratio=out[-1])
 
 
 # ---------------------------------------------------------------------------

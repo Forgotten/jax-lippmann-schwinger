@@ -17,6 +17,7 @@ import jax
 import jax.numpy as jnp
 
 import jax_ls
+from jax_ls import accelerate
 from jax_ls import nd_solver as nd
 from jax_ls import sparsify
 from jax_ls.domain import Domain
@@ -537,3 +538,232 @@ class TestFactorCaching:
     _, g_block = jax_ls.near_field_l2_loss_and_grad(near, data, nu)
     _, g_superlu = jax_ls.near_field_l2_loss_and_grad(superlu, data, nu)
     assert _rel(g_block, g_superlu) < 1e-3
+
+
+# ---------------------------------------------------------------------------
+# Factorising on the host CPU, solving on the default device.
+# ---------------------------------------------------------------------------
+# The host LAPACKs, Accelerate skipped where it cannot run.
+LAPACKS = [
+  "scipy",
+  pytest.param(
+    "accelerate",
+    marks=pytest.mark.skipif(
+      not accelerate.available(),
+      reason=accelerate.unavailable_reason() or "the shim did not build",
+    ),
+  ),
+]
+
+
+@pytest.mark.parametrize("lapack", LAPACKS)
+class TestFactorOnCpu:
+  """`factorize_on_cpu` must give the same factor as `factorize`.
+
+  Compared through the factor's own solves against SciPy, not through a
+  preconditioned GMRES solve: GMRES converges even with a wrong preconditioner,
+  so it would hide a wrong factor.  Run with both host LAPACKs.
+  """
+
+  @pytest.mark.parametrize("m,n,leaf", GRIDS)
+  def test_same_blocks_as_on_device(self, m, n, leaf, lapack):
+    coef, _ = random_stencil(m, n)
+    st = nd.NDStructure.create(m, n, leaf)
+    device = nd.factorize(st, jnp.asarray(coef))
+    host = nd.factorize_on_cpu(st, jnp.asarray(coef), lapack)
+    for a, b in zip(host.levels, device.levels):
+      for name in ("inverse", "lower", "upper"):
+        x, y = np.asarray(getattr(a, name)), np.asarray(getattr(b, name))
+        assert np.abs(x - y).max() <= 1e-10 * max(np.abs(y).max(), 1.0), name
+    assert float(host.growth) == pytest.approx(float(device.growth), rel=1e-8)
+    assert float(host.pivot_ratio) == pytest.approx(
+      float(device.pivot_ratio), rel=1e-8
+    )
+
+  @pytest.mark.parametrize("mode", ["N", "T", "H"])
+  def test_solves_the_matrix(self, mode, lapack):
+    coef, M = random_stencil(31, 20)
+    factor = nd.factorize_on_cpu(
+      nd.NDStructure.create(31, 20, 8), jnp.asarray(coef), lapack
+    )
+    op = {"N": M, "T": M.T, "H": M.conj().T}[mode]
+    b = np.random.default_rng(4).standard_normal((620, 3)) + 0j
+    x = np.asarray(nd.solve(factor, jnp.asarray(b), mode))
+    assert _rel_residual(op, x, b) < 1e-12
+
+  def test_inside_jit(self, lapack):
+    coef, M = random_stencil(16, 16)
+    st = nd.NDStructure.create(16, 16, 4)
+    solve = jax.jit(lambda c, r: nd.solve(nd.factorize_on_cpu(st, c, lapack), r, "T"))
+    b = jnp.ones(256, dtype=complex)
+    x = solve(jnp.asarray(coef), b)
+    assert _rel_residual(M.T, np.asarray(x), np.asarray(b)) < 1e-12
+
+  def test_keeps_the_precision_of_its_input(self, lapack):
+    coef, _ = random_stencil(16, 16, dtype=np.complex64)
+    factor = nd.factorize_on_cpu(
+      nd.NDStructure.create(16, 16, 4), jnp.asarray(coef), lapack
+    )
+    assert factor.levels[0].inverse.dtype == jnp.complex64
+
+  def test_batched_coefficients(self, lapack):
+    """Under `vmap` each set of coefficients is factored in turn."""
+    st = nd.NDStructure.create(12, 12, 4)
+    first, M1 = random_stencil(12, 12, seed=1)
+    second, M2 = random_stencil(12, 12, seed=2)
+    b = jnp.ones(144, dtype=complex)
+
+    def solve(coefficients):
+      return nd.solve(nd.factorize_on_cpu(st, coefficients, lapack), b)
+
+    xs = np.asarray(
+      jax.vmap(solve)(jnp.stack([jnp.asarray(first), jnp.asarray(second)]))
+    )
+    for x, M in zip(xs, (M1, M2)):
+      assert _rel_residual(M, x, np.asarray(b)) < 1e-12
+
+  def test_pivots_on_a_zero_diagonal(self, lapack):
+    m = n = 12
+    rng = np.random.default_rng(3)
+    coef = 0.1 * (
+      rng.standard_normal((9, m, n)) + 1j * rng.standard_normal((9, m, n))
+    )
+    coef[4] = 0.0
+    coef[3] += 1.0
+    coef[5] += 1.0
+    domain = Domain(1.0, 1.0, n, m)
+    coef = coef * sparsify._valid_mask(domain)
+    M = sparsify._assemble(domain, coef)
+    factor = nd.factorize_on_cpu(
+      nd.NDStructure.create(m, n, 4), jnp.asarray(coef), lapack
+    )
+    b = np.ones(m * n, dtype=complex)
+    assert (
+      _rel_residual(M, np.asarray(nd.solve(factor, jnp.asarray(b))), b) < 1e-10
+    )
+
+  def test_needs_a_host_copy(self, lapack):
+    st = nd.NDStructure.create(8, 8, 4).replace(host_key=-1)
+    coef, _ = random_stencil(8, 8)
+    with pytest.raises(ValueError, match="host copy"):
+      nd.factorize_on_cpu(st, jnp.asarray(coef), lapack)
+
+  def test_singular_front_raises(self, lapack):
+    """An exactly singular leaf block is reported, not factored into NaNs."""
+    coef = np.zeros((9, 8, 8), dtype=np.complex128)
+    st = nd.NDStructure.create(8, 8, 4)
+    with pytest.raises(Exception, match="singular"):
+      jax.block_until_ready(nd.factorize_on_cpu(st, jnp.asarray(coef), lapack))
+
+
+@pytest.mark.skipif(not accelerate.available(), reason="needs Accelerate")
+def test_accelerate_and_scipy_pivot_alike():
+  """Same pivots, so the same diagnostics, to rounding."""
+  coef, _ = random_stencil(40, 9)
+  st = nd.NDStructure.create(40, 9, 8)
+  a = nd.factorize_on_cpu(st, jnp.asarray(coef), "scipy")
+  b = nd.factorize_on_cpu(st, jnp.asarray(coef), "accelerate")
+  assert float(a.growth) == pytest.approx(float(b.growth), rel=1e-12)
+  assert float(a.pivot_ratio) == pytest.approx(float(b.pivot_ratio), rel=1e-10)
+
+
+def test_unknown_lapack_is_rejected():
+  coef, _ = random_stencil(8, 8)
+  with pytest.raises(ValueError, match="lapack"):
+    nd.factorize_on_cpu(nd.NDStructure.create(8, 8, 4), coef, "mkl")
+
+
+def test_accelerate_unavailable_fails_early(monkeypatch):
+  monkeypatch.setattr(accelerate, "_LIBRARY", None)
+  monkeypatch.setattr(accelerate.sys, "platform", "linux")
+  assert "macOS only" in accelerate.unavailable_reason()
+  params = jax_ls.init_params(1.0, 1.0, 16, 16, 10.0)
+  with pytest.raises(RuntimeError, match="macOS only"):
+    jax_ls.with_sparsifying_preconditioner(
+      params, backend="block_inverse", factor_on="accelerate"
+    )
+
+
+class TestFactorOnCpuBackend:
+  @pytest.fixture(scope="class", params=["cpu", "accelerate"])
+  def pair(self, request):
+    if request.param == "accelerate" and not accelerate.available():
+      pytest.skip(accelerate.unavailable_reason() or "no Accelerate shim")
+    n, omega = 40, 30.0
+    base = jax_ls.init_params(1.0, 1.0, n, n, omega)
+    default = jax_ls.with_sparsifying_preconditioner(
+      base, backend="block_inverse"
+    )
+    cpu = jax_ls.with_sparsifying_preconditioner(
+      base, backend="block_inverse", factor_on=request.param
+    )
+    nu = base.domain.sample(lambda x, y: 2.0 * (x**2 + y**2 < 0.09) * 1.0)
+    f = jax.random.normal(jax.random.PRNGKey(8), (n * n,)) + 0j
+    return base, default, cpu, nu, f
+
+  def test_option_is_recorded_and_validated(self, pair):
+    _, _, cpu, _, _ = pair
+    assert cpu.sparsifier.factor_on in ("cpu", "accelerate")
+    params = jax_ls.init_params(
+      1.0,
+      1.0,
+      16,
+      16,
+      10.0,
+      sparsify=True,
+      sparsify_backend="block_inverse",
+      sparsify_factor_on="cpu",
+    )
+    assert params.sparsifier.factor_on == "cpu"
+    with pytest.raises(ValueError, match="factor_on"):
+      jax_ls.with_sparsifying_preconditioner(
+        params.replace(sparsifier=None),
+        backend="block_inverse",
+        factor_on="gpu",
+      )
+
+  def test_factor_solves_M(self, pair):
+    _, _, cpu, nu, f = pair
+    A, C = cpu.sparsifier.matrices()
+    M = -A + cpu.omega**2 * C @ sps.diags(np.asarray(nu))
+    factor = sparsify.factor_matrix(cpu.sparsifier, cpu.omega, nu)
+    for mode, op in (("N", M), ("T", M.T)):
+      x = np.asarray(nd.solve(factor, f, mode))
+      assert _rel_residual(op, x, np.asarray(f)) < 1e-11
+
+  def test_same_preconditioner(self, pair):
+    _, default, cpu, nu, f = pair
+    for adjoint in (False, True):
+      p_default = jax_ls.preconditioner_for(default, nu, adjoint=adjoint)(f)
+      p_cpu = jax_ls.preconditioner_for(cpu, nu, adjoint=adjoint)(f)
+      assert _rel(p_cpu, p_default) < 1e-11
+
+  def test_same_solution_and_derivatives(self, pair):
+    base, default, cpu, nu, f = pair
+    assert (
+      _rel(
+        jax_ls.ls_solver(cpu, nu, f, TIGHT),
+        jax_ls.ls_solver(base, nu, f, TIGHT),
+      )
+      < 1e-9
+    )
+    d = base.domain.sample(lambda x, y: jnp.exp(-30 * (x**2 + y**2)))
+
+    def tangent(params):
+      return jax.jvp(
+        lambda v: jax_ls.ls_solver(params, v, f, TIGHT), (nu,), (d,)
+      )[1]
+
+    assert _rel(tangent(cpu), tangent(default)) < 1e-8
+
+  def test_caching_still_factors_once(self, pair):
+    _, _, cpu, nu, _ = pair
+    near = jax_ls.init_params_near_field(1.0, 1.0, 40, 40, 1.0, 8, 30.0)
+    near = near.replace(ls_params=cpu)
+    t = cpu.domain.sample(lambda x, y: jnp.exp(-30 * (x**2 + y**2)))
+
+    def run():
+      lin = jax_ls.linearize(near, nu)
+      return [lin.vjp(lin.jvp(t)) for _ in range(2)]
+
+    assert _device_factorisations(run) == 1

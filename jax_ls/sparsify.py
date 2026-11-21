@@ -74,7 +74,7 @@ import jax.numpy as jnp
 
 from flax import struct
 
-from . import nd_solver
+from . import accelerate, nd_solver
 from .domain import Domain
 from .kernels import GreenKernel
 from .nd_solver import NDFactor, NDStructure
@@ -532,6 +532,11 @@ class SparsifyingStencils:
     structure: The nested-dissection analysis of the grid, for the
       ``"block_inverse"`` backend; None otherwise.
     backend: How ``M`` is factored; see `BACKENDS`.
+    factor_on: Where the ``"block_inverse"`` factorisation runs: ``"default"``,
+      JAX's default device; ``"cpu"``, the host CPU in complex128 with SciPy's
+      LAPACK; or ``"accelerate"``, the same with Apple Accelerate's LAPACK
+      (macOS only; see `jax_ls.nd_solver.factorize_on_cpu`).  The solves run
+      on the default device either way.
   """
 
   domain: Domain
@@ -541,6 +546,7 @@ class SparsifyingStencils:
   key: Array
   structure: NDStructure | None = None
   backend: str = struct.field(pytree_node=False, default="superlu")
+  factor_on: str = struct.field(pytree_node=False, default="default")
 
   @classmethod
   def create(
@@ -549,6 +555,7 @@ class SparsifyingStencils:
     refactor_rtol: float = 0.0,
     backend: str = "auto",
     leaf: int = nd_solver.DEFAULT_LEAF,
+    factor_on: str = "default",
   ) -> "SparsifyingStencils":
     """Build the stencils for a kernel.
 
@@ -564,13 +571,20 @@ class SparsifyingStencils:
       backend: ``"superlu"``, ``"block_inverse"`` or ``"auto"``; see
         `BACKENDS`.
       leaf: Leaf size of the dissection tree, ``"block_inverse"`` only.
+      factor_on: ``"default"`` factors on JAX's default device; ``"cpu"`` on
+        the host CPU in complex128, for accelerators with weak double
+        precision; ``"accelerate"`` likewise but with Apple Accelerate's
+        LAPACK, macOS only.  ``"block_inverse"`` only; the solves stay on the
+        default device.
 
     Returns:
       The stencils, with their matrices registered on the host.
 
     Raises:
       ValueError: If the grid has fewer than three points along an axis, or
-        the backend is unknown.
+        the backend or `factor_on` is unknown.
+      RuntimeError: With ``factor_on="accelerate"``, when Accelerate is
+        unavailable (not macOS 13.3+, or no C compiler to build its shim).
     """
     if backend == "auto":
       backend = "superlu" if jax.default_backend() == "cpu" else "block_inverse"
@@ -578,6 +592,12 @@ class SparsifyingStencils:
       raise ValueError(
         f"backend must be one of {BACKENDS} or 'auto', got {backend!r}"
       )
+    if factor_on not in nd_solver.FACTOR_ON:
+      raise ValueError(
+        f"factor_on must be one of {nd_solver.FACTOR_ON}, got {factor_on!r}"
+      )
+    if factor_on == "accelerate":
+      accelerate.load()  # fail now, not inside a callback mid-solve
     domain = kernel.domain
     m, n = domain.shape
     if m < 3 or n < 3:
@@ -647,6 +667,7 @@ class SparsifyingStencils:
       key=jnp.asarray(key, dtype=jnp.int32),
       structure=_structure(m, n, leaf) if backend == "block_inverse" else None,
       backend=backend,
+      factor_on=factor_on,
     )
 
   # -- the sparse matrices, for inspection and tests ------------------------
@@ -740,7 +761,7 @@ def factor_matrix(
 
   Exposed for inspection: `NDFactor.growth` and `NDFactor.pivot_ratio` report
   how well the per-front pivoting did.  Works whatever the backend of
-  `stencils`.
+  `stencils`, and honours its `factor_on`.
 
   Args:
     stencils: The sparsifying stencils of this frequency.
@@ -753,9 +774,12 @@ def factor_matrix(
   structure = stencils.structure
   if structure is None:
     structure = _structure(*stencils.domain.shape, nd_solver.DEFAULT_LEAF)
-  return nd_solver.factorize(
-    structure, matrix_coefficients(stencils, omega, nu)
-  )
+  coefficients = matrix_coefficients(stencils, omega, nu)
+  if stencils.factor_on == "cpu":
+    return nd_solver.factorize_on_cpu(structure, coefficients, "scipy")
+  if stencils.factor_on == "accelerate":
+    return nd_solver.factorize_on_cpu(structure, coefficients, "accelerate")
+  return nd_solver.factorize(structure, coefficients)
 
 
 @struct.dataclass
@@ -855,9 +879,7 @@ def _inverse_mt(
 
   if stencils.backend == "block_inverse":
     if factor is None:
-      factor = nd_solver.factorize(
-        stencils.structure, matrix_coefficients(stencils, omega_c, nu_c)
-      )
+      factor = factor_matrix(stencils, omega_c, nu_c)
       _record_device_factorization()
 
     def device(mode: str) -> Callable:

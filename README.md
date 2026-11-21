@@ -96,6 +96,21 @@ every solve at one contrast: `linearize`, the near-field derivative rules and th
 gradient each factor once. See
 [`notebooks/block_inverse_solver_notebook.ipynb`](notebooks/block_inverse_solver_notebook.ipynb).
 
+On GPUs with weak double precision, the batched complex128 LU of the factorisation is the slow
+step. `sparsify_factor_on="cpu"` (or `factor_on="cpu"` in `with_sparsifying_preconditioner`)
+factors on the host instead, with NumPy and LAPACK in complex128, and copies the blocks to the
+device once per contrast; every solve still runs on the device as batched matrix products.
+On macOS, `factor_on="accelerate"` does the same with Apple Accelerate's LAPACK, factoring
+each level's fronts in parallel. It helps when NumPy and SciPy are *not* already linked
+against Accelerate, as in a default Anaconda install, which uses OpenBLAS. Check with
+`numpy.show_config()` and `scipy.show_config()`. The pip wheels of NumPy 2.0+ and recent
+SciPy on Apple Silicon with macOS 14+ already use Accelerate; there `factor_on="cpu"` runs on
+Accelerate too, and the remaining gain is the parallel loop over fronts. The option needs
+macOS 13.3+ and the Xcode Command Line Tools: a small C shim is compiled on first use and
+cached in `~/Library/Caches/jax_ls` (or `$JAX_LS_CACHE_DIR`). On an M4 at n = 511, with
+NumPy and SciPy on OpenBLAS, it factors in 3.8 s, against 7.6 s for `factor_on="cpu"` and
+5.5 s for XLA on the CPU.
+
 ## Watching an inversion
 
 The optimisers can keep every iterate: `QuasiNewton(record=True)`, `GaussNewton(record=True)`
