@@ -49,15 +49,16 @@ rhs = -(omega**2) * nu * u_i
 # Which is then reshaped.
 f = jnp.reshape(rhs, (-1,))
 
-# Solve for the density u = G * sigma.
-start = time.time()
+# Solve for the density u = G * sigma.  JAX dispatches asynchronously, so the
+# clock stops only once the result is ready; the time includes compilation.
+start = time.perf_counter()
 sigma = jax_ls.ls_solver(params, nu_vect, f)
 
 # Computing the scattered field from the density.
-u_s = jax_ls.apply_green_function(params, sigma)
+u_s = jax.block_until_ready(jax_ls.apply_green_function(params, sigma))
 
-end = time.time()
-print("overall time elapsed was %e[s]" % (end - start))
+end = time.perf_counter()
+print("single solve, including compilation: %.2f[s]" % (end - start))
 
 plt.figure(figsize=(10, 10))
 plt.subplot(2, 2, 1)
@@ -128,7 +129,7 @@ plt.imshow(jnp.real(U_s[:, 1].reshape(n, m)))
 plt.show()
 
 # Trying a much bigger problem.
-start = time.time()
+start = time.perf_counter()
 n_angles = 100
 d_theta = jnp.pi * 2 / (n_angles)
 theta = jnp.linspace(jnp.pi, 3 * jnp.pi - d_theta, n_angles)
@@ -155,8 +156,8 @@ Rhs = -(omega**2) * nu.reshape((-1, 1)) * U_i
 Sigma = solver_batched(Rhs)
 
 # Compute the scattered field.
-U_s = green_batched(Sigma)
+U_s = jax.block_until_ready(green_batched(Sigma))
 
-end = time.time()
+end = time.perf_counter()
 
-print("overall time elapsed was %d[s]" % (end - start))
+print("%d batched solves: %.2f[s]" % (n_angles, end - start))

@@ -58,8 +58,8 @@ loss_vjp = jit(
 print("initial loss with zero initial guess %e" % (loss_vjp(0 * nu_vect)))
 
 start_time = time.perf_counter()
-opt_result = jax.scipy.optimize.minimize(
-  loss_vjp, x0=jnp.real(0 * nu_vect), method="bfgs"
+opt_result = jax.block_until_ready(
+  jax.scipy.optimize.minimize(loss_vjp, x0=jnp.real(0 * nu_vect), method="bfgs")
 )
 end_time = time.perf_counter()
 

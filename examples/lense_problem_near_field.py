@@ -1,5 +1,3 @@
-import time
-
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
@@ -89,7 +87,6 @@ plt.show()
 
 # Sampling on a circle.
 # We seek to sample the wavefield on the observation manifold.
-start = time.time()
 n_angles = n
 radius = 1.0
 

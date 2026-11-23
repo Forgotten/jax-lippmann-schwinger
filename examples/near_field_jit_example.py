@@ -39,13 +39,14 @@ def perturbation(x: Array, y: Array) -> Array:
 nu = perturbation(params_nf.ls_params.X, params_nf.ls_params.Y)
 nu_vect = jnp.reshape(nu, (-1,))
 
-# Starting the solution and the computation.
-start = time.time()
+# Starting the solution and the computation.  JAX dispatches asynchronously,
+# so the clock stops only once the result is ready.
+start = time.perf_counter()
 
-near_field = jax_ls.near_field_map(params_nf, nu_vect)
+near_field = jax.block_until_ready(jax_ls.near_field_map(params_nf, nu_vect))
 
-end = time.time()
-print("overall time elapsed was %e[s]" % (end - start))
+end = time.perf_counter()
+print("near-field map, including compilation: %.2f[s]" % (end - start))
 
 # Plotting the near field map.
 plt.figure(figsize=(10, 5))

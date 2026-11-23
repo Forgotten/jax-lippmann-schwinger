@@ -52,8 +52,9 @@ green_batched = vmap(
   out_axes=1,
 )
 
-# We seek to sample the wavefield on the observation manifold.
-start = time.time()
+# We seek to sample the wavefield on the observation manifold.  JAX dispatches
+# asynchronously, so the clock stops only once the result is ready.
+start = time.perf_counter()
 n_angles = n
 radius = 1.0
 
@@ -68,10 +69,12 @@ Rhs = -(omega**2) * nu.reshape((-1, 1)) * U_i
 Sigma = solver_batched(Rhs)
 
 # Compute the scattered field.
-U_s = green_batched(Sigma)
+U_s = jax.block_until_ready(green_batched(Sigma))
 
-end = time.time()
-print("overall time elapsed was %d[s]" % (end - start))
+end = time.perf_counter()
+print(
+  "%d batched solves, including compilation: %.2f[s]" % (n_angles, end - start)
+)
 
 near_field = params.cell_area * (
   Sigma.T.reshape((n_angles, -1)) @ U_i.reshape(-1, n_angles)
@@ -100,9 +103,9 @@ params_nf = jax_ls.init_params_near_field(
   ax, ay, n, m, sampling_radius, n_angles, omega
 )
 
-start = time.time()
+start = time.perf_counter()
 
-near_field_2 = jax_ls.near_field_map(params_nf, nu_vect)
+near_field_2 = jax.block_until_ready(jax_ls.near_field_map(params_nf, nu_vect))
 
-end = time.time()
-print("overall time elapsed was %e[s]" % (end - start))
+end = time.perf_counter()
+print("near-field map, including compilation: %.2f[s]" % (end - start))
