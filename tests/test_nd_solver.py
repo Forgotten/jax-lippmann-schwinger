@@ -594,7 +594,9 @@ class TestFactorOnCpu:
   def test_inside_jit(self, lapack):
     coef, M = random_stencil(16, 16)
     st = nd.NDStructure.create(16, 16, 4)
-    solve = jax.jit(lambda c, r: nd.solve(nd.factorize_on_cpu(st, c, lapack), r, "T"))
+    solve = jax.jit(
+      lambda c, r: nd.solve(nd.factorize_on_cpu(st, c, lapack), r, "T")
+    )
     b = jnp.ones(256, dtype=complex)
     x = solve(jnp.asarray(coef), b)
     assert _rel_residual(M.T, np.asarray(x), np.asarray(b)) < 1e-12
@@ -692,7 +694,7 @@ class TestFactorOnCpuBackend:
     n, omega = 40, 30.0
     base = jax_ls.init_params(1.0, 1.0, n, n, omega)
     default = jax_ls.with_sparsifying_preconditioner(
-      base, backend="block_inverse"
+      base, backend="block_inverse", factor_on="device"
     )
     cpu = jax_ls.with_sparsifying_preconditioner(
       base, backend="block_inverse", factor_on=request.param
@@ -702,8 +704,13 @@ class TestFactorOnCpuBackend:
     return base, default, cpu, nu, f
 
   def test_option_is_recorded_and_validated(self, pair):
-    _, _, cpu, _, _ = pair
+    _, default, cpu, _, _ = pair
     assert cpu.sparsifier.factor_on in ("cpu", "accelerate")
+    assert default.sparsifier.factor_on == "device"
+    implicit = jax_ls.with_sparsifying_preconditioner(
+      default.replace(sparsifier=None), backend="block_inverse"
+    )
+    assert implicit.sparsifier.factor_on == "cpu"  # the default
     params = jax_ls.init_params(
       1.0,
       1.0,

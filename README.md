@@ -90,16 +90,18 @@ forward and adjoint solve at that contrast. See
 
 On accelerators, `sparsify_backend="block_inverse"` replaces SuperLU with
 `jax_ls.nd_solver`, a nested-dissection solver written in `jax.numpy` that stores every
-diagonal block already inverted. A solve is then batched GEMMs, and the factorisation, GMRES
-and gradients stay in one jitted program on the device. The factorisation is cached across
+diagonal block already inverted. A solve is then batched GEMMs on the device, inside one
+jitted program with GMRES and the gradients. The factorisation is cached across
 every solve at one contrast: `linearize`, the near-field derivative rules and the loss's
 gradient each factor once. See
 [`notebooks/block_inverse_solver_notebook.ipynb`](notebooks/block_inverse_solver_notebook.ipynb).
 
-On GPUs with weak double precision, the batched complex128 LU of the factorisation is the slow
-step. `sparsify_factor_on="cpu"` (or `factor_on="cpu"` in `with_sparsifying_preconditioner`)
-factors on the host instead, with NumPy and LAPACK in complex128, and copies the blocks to the
-device once per contrast; every solve still runs on the device as batched matrix products.
+By default the factorisation itself runs on the host CPU (`sparsify_factor_on="cpu"`, or
+`factor_on="cpu"` in `with_sparsifying_preconditioner`): GPUs with weak double precision are
+slowest at the batched complex128 LU. It uses NumPy and LAPACK in complex128 through
+`jax.pure_callback`, still inside the jitted program, and copies the blocks to the device once
+per contrast; every solve runs on the device as batched matrix products. `factor_on="device"`
+factors in `jax.numpy` on the device instead, which is somewhat faster on a CPU-only machine.
 On macOS, `factor_on="accelerate"` does the same with Apple Accelerate's LAPACK, factoring
 each level's fronts in parallel. It helps when NumPy and SciPy are *not* already linked
 against Accelerate, as in a default Anaconda install, which uses OpenBLAS. Check with

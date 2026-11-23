@@ -96,10 +96,15 @@ DEFAULT_LEAF = 8
 MODES = ("N", "T", "H")
 
 # Where a factorisation is computed; see `factorize` and `factorize_on_cpu`.
-#   "default"    -- JAX's default device, in `jax.numpy`.
-#   "cpu"        -- the host CPU, with the LAPACK SciPy is linked against.
+#   "cpu"        -- the host CPU, with the LAPACK SciPy is linked against.  The
+#                   default of the "block_inverse" preconditioner: GPUs are
+#                   slow at the batched complex128 LU.
 #   "accelerate" -- the host CPU, with Apple Accelerate's LAPACK; macOS only.
-FACTOR_ON = ("default", "cpu", "accelerate")
+#   "device"     -- JAX's default device, in `jax.numpy`.
+FACTOR_ON = ("cpu", "accelerate", "device")
+
+# Where the "block_inverse" preconditioner factors unless told otherwise.
+DEFAULT_FACTOR_ON = "cpu"
 
 # The host LAPACK implementations `factorize_host` can use.
 HOST_LAPACKS = ("scipy", "accelerate")

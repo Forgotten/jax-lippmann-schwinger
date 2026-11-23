@@ -158,7 +158,7 @@ def init_params(
   sparsify: bool = False,
   refactor_rtol: float = 0.0,
   sparsify_backend: str = "auto",
-  sparsify_factor_on: str = "default",
+  sparsify_factor_on: str = "cpu",
 ) -> LippSchwinParams:
   """Initialize the parameters for the Lippmann-Schwinger solver.
 
@@ -186,9 +186,9 @@ def init_params(
     sparsify_backend: With `sparsify`, how the sparse matrix is factored:
       ``"superlu"`` (host), ``"block_inverse"`` (device) or ``"auto"``.
     sparsify_factor_on: With ``"block_inverse"``, where the factorisation runs:
-      ``"default"`` (JAX's default device), ``"cpu"`` (the host, in
-      complex128, with SciPy's LAPACK) or ``"accelerate"`` (the host, with
-      Apple Accelerate's LAPACK; macOS only).  The solves stay on the device.
+      ``"cpu"`` (the default: the host, in complex128, with SciPy's LAPACK),
+      ``"accelerate"`` (the host, with Apple Accelerate's LAPACK; macOS only)
+      or ``"device"`` (JAX's default device).  The solves stay on the device.
 
   Returns:
     A LippSchwinParams object containing the initialized parameters.
@@ -217,7 +217,7 @@ def with_sparsifying_preconditioner(
   refactor_rtol: float = 0.0,
   backend: str = "auto",
   leaf: int | None = None,
-  factor_on: str = "default",
+  factor_on: str = "cpu",
 ) -> LippSchwinParams:
   """The same parameters, with Ying's sparsifying preconditioner attached.
 
@@ -234,11 +234,13 @@ def with_sparsifying_preconditioner(
       the whole preconditioner stays on the device; ``"auto"`` picks the latter
       on accelerators.
     leaf: Leaf size of the dissection tree for ``"block_inverse"``.
-    factor_on: For ``"block_inverse"``, factor on JAX's default device
-      (``"default"``) or on the host CPU in complex128 (``"cpu"``).  Use
-      ``"cpu"`` on accelerators with weak double precision: the batched fp64 LU
-      is then their slowest step, while the solves, which stay on the device,
-      are matrix products.  ``"accelerate"`` factors on the host too, with
+    factor_on: For ``"block_inverse"``, factor on the host CPU in complex128
+      (``"cpu"``, the default) or on JAX's default device (``"device"``).  The
+      host is the default because accelerators with weak double precision are
+      slowest at the batched fp64 LU, while the solves, which stay on the
+      device, are matrix products.  On a CPU-only machine ``"device"`` is
+      somewhat faster: XLA factors in 5.5 s at n = 511, SciPy (OpenBLAS) in
+      7.6 s.  ``"accelerate"`` factors on the host too, with
       Apple Accelerate's LAPACK; macOS only.  It helps when SciPy is not
       already linked against Accelerate (a conda install uses OpenBLAS); with
       the pip wheels on macOS 14+, ``"cpu"`` already uses Accelerate.

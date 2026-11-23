@@ -48,7 +48,9 @@ def unavailable_reason() -> str | None:
   release = platform.mac_ver()[0]
   version = tuple(int(part) for part in release.split(".") if part.isdigit())
   if version < MINIMUM_MACOS:
-    return f"Accelerate's new LAPACK interface needs macOS 13.3+, found {release}"
+    return (
+      f"Accelerate's new LAPACK interface needs macOS 13.3+, found {release}"
+    )
   return None
 
 

@@ -532,11 +532,11 @@ class SparsifyingStencils:
     structure: The nested-dissection analysis of the grid, for the
       ``"block_inverse"`` backend; None otherwise.
     backend: How ``M`` is factored; see `BACKENDS`.
-    factor_on: Where the ``"block_inverse"`` factorisation runs: ``"default"``,
-      JAX's default device; ``"cpu"``, the host CPU in complex128 with SciPy's
-      LAPACK; or ``"accelerate"``, the same with Apple Accelerate's LAPACK
-      (macOS only; see `jax_ls.nd_solver.factorize_on_cpu`).  The solves run
-      on the default device either way.
+    factor_on: Where the ``"block_inverse"`` factorisation runs: ``"cpu"``
+      (the default), the host CPU in complex128 with SciPy's LAPACK;
+      ``"accelerate"``, the same with Apple Accelerate's LAPACK (macOS only;
+      see `jax_ls.nd_solver.factorize_on_cpu`); or ``"device"``, JAX's default
+      device.  The solves run on the default device either way.
   """
 
   domain: Domain
@@ -546,7 +546,9 @@ class SparsifyingStencils:
   key: Array
   structure: NDStructure | None = None
   backend: str = struct.field(pytree_node=False, default="superlu")
-  factor_on: str = struct.field(pytree_node=False, default="default")
+  factor_on: str = struct.field(
+    pytree_node=False, default=nd_solver.DEFAULT_FACTOR_ON
+  )
 
   @classmethod
   def create(
@@ -555,7 +557,7 @@ class SparsifyingStencils:
     refactor_rtol: float = 0.0,
     backend: str = "auto",
     leaf: int = nd_solver.DEFAULT_LEAF,
-    factor_on: str = "default",
+    factor_on: str = nd_solver.DEFAULT_FACTOR_ON,
   ) -> "SparsifyingStencils":
     """Build the stencils for a kernel.
 
@@ -571,11 +573,11 @@ class SparsifyingStencils:
       backend: ``"superlu"``, ``"block_inverse"`` or ``"auto"``; see
         `BACKENDS`.
       leaf: Leaf size of the dissection tree, ``"block_inverse"`` only.
-      factor_on: ``"default"`` factors on JAX's default device; ``"cpu"`` on
-        the host CPU in complex128, for accelerators with weak double
-        precision; ``"accelerate"`` likewise but with Apple Accelerate's
-        LAPACK, macOS only.  ``"block_inverse"`` only; the solves stay on the
-        default device.
+      factor_on: ``"cpu"`` (the default) factors on the host CPU in
+        complex128, because accelerators are slow at the batched fp64 LU;
+        ``"accelerate"`` likewise but with Apple Accelerate's LAPACK, macOS
+        only; ``"device"`` on JAX's default device.  ``"block_inverse"``
+        only; the solves stay on the default device.
 
     Returns:
       The stencils, with their matrices registered on the host.
